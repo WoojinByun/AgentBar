@@ -18,7 +18,7 @@ macOS menu bar app that tracks AI coding assistant usage in one place.
 | Service | Data Source |
 |---------|-----------|
 | Claude Code | Anthropic OAuth API (Keychain credential) |
-| OpenAI Codex | Local session logs (`~/.codex/sessions/`) |
+| OpenAI Codex | Codex app-server usage API, with local session fallback |
 | Google Gemini | Local logs (`~/.gemini/tmp/`) |
 | GitHub Copilot | GitHub Copilot API (PAT from Keychain) |
 | Cursor | Cursor API + local SQLite DB |

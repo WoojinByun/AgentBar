@@ -55,6 +55,203 @@ final class CodexUsageProviderTests: XCTestCase {
 
     // MARK: - Rate Limits Parsing
 
+    func testClassifiesSingle10080MinutePrimaryAsWeekly() async throws {
+        let dateDir = tempDir.appendingPathComponent("2026/09/02")
+        try FileManager.default.createDirectory(at: dateDir, withIntermediateDirectories: true)
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let weeklyReset = Int(Date().addingTimeInterval(7 * 24 * 3600).timeIntervalSince1970)
+        let content = """
+        {"timestamp":"\(now)","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":\(weeklyReset)},"secondary":null}}}
+        """
+        let file = dateDir.appendingPathComponent("rollout-weekly-only.jsonl")
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let provider = CodexUsageProvider(sessionsDir: tempDir, defaults: testDefaults)
+        let usage = try await provider.fetchUsage()
+        let weeklyUsage = try XCTUnwrap(usage.weeklyUsage)
+        let weeklyResetTime = try XCTUnwrap(weeklyUsage.resetTime)
+
+        XCTAssertEqual(usage.fiveHourUsage.used, 0)
+        XCTAssertEqual(usage.fiveHourUsage.unit, .tokens)
+        XCTAssertEqual(weeklyUsage.used, 1_000_000)
+        XCTAssertEqual(weeklyUsage.unit, .tokens)
+        XCTAssertFalse(usage.showsFiveHourUsage)
+        XCTAssertEqual(
+            weeklyResetTime.timeIntervalSince1970,
+            Double(weeklyReset),
+            accuracy: 1
+        )
+    }
+
+    func testLiveAppServerUsageReplacesStaleSessionUsage() async throws {
+        let dateDir = tempDir.appendingPathComponent("2026/09/02")
+        try FileManager.default.createDirectory(at: dateDir, withIntermediateDirectories: true)
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let staleReset = Int(Date().addingTimeInterval(2 * 24 * 3600).timeIntervalSince1970)
+        let liveReset = Int(Date().addingTimeInterval(7 * 24 * 3600).timeIntervalSince1970)
+        let content = """
+        {"timestamp":"\(now)","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":100.0,"window_minutes":10080,"resets_at":\(staleReset)},"secondary":null}}}
+        """
+        let file = dateDir.appendingPathComponent("rollout-stale.jsonl")
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let response = """
+        {"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":1.0,"windowDurationMins":10080,"resetsAt":\(liveReset)},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"self_serve_business_prolite","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":1.0,"windowDurationMins":10080,"resetsAt":\(liveReset)},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"self_serve_business_prolite","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]},"rateLimitUpsell":null}}
+        """
+        let provider = CodexUsageProvider(
+            sessionsDir: tempDir,
+            defaults: testDefaults,
+            appServerResponseProvider: { response }
+        )
+        let usage = try await provider.fetchUsage()
+        let weeklyUsage = try XCTUnwrap(usage.weeklyUsage)
+        let weeklyResetTime = try XCTUnwrap(weeklyUsage.resetTime)
+
+        XCTAssertEqual(weeklyUsage.used, 1)
+        XCTAssertEqual(weeklyUsage.unit, .percent)
+        XCTAssertFalse(usage.showsFiveHourUsage)
+        XCTAssertEqual(weeklyResetTime.timeIntervalSince1970, Double(liveReset), accuracy: 1)
+    }
+
+    func testRunAppServerSendsHandshakeAndReturnsRateLimitResponse() throws {
+        let executable = tempDir.appendingPathComponent("fake-codex")
+        let response = """
+        {"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":1.0,"windowDurationMins":10080,"resetsAt":1788926577},"secondary":null}}}
+        """
+        let script = """
+        #!/bin/sh
+        IFS= read -r initialize
+        IFS= read -r initialized
+        IFS= read -r request
+        case "$initialize" in *'"method":"initialize"'*) ;; *) exit 11 ;; esac
+        case "$initialized" in *'"method":"initialized"'*) ;; *) exit 12 ;; esac
+        case "$request" in *'"method":"account/rateLimits/read"'*) ;; *) exit 13 ;; esac
+        printf '%s\\n' '\(response)'
+        sleep 10
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        let startedAt = Date()
+        let output = CodexUsageProvider.runAppServer(executableURL: executable, timeout: 2)
+
+        XCTAssertEqual(output, response)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 2)
+    }
+
+    func testRunAppServerReturnsWhenProcessExitsWithoutResponse() throws {
+        let executable = tempDir.appendingPathComponent("failing-codex")
+        try "#!/bin/sh\nexit 1\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        let startedAt = Date()
+        let output = CodexUsageProvider.runAppServer(executableURL: executable, timeout: 2)
+
+        XCTAssertNil(output)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
+    }
+
+    func testAppServerWriteReturnsFalseWhenReaderHasClosed() {
+        let pipe = Pipe()
+        let writer = pipe.fileHandleForWriting
+        pipe.fileHandleForReading.closeFile()
+
+        XCTAssertFalse(
+            CodexUsageProvider.writeAppServerRequests(
+                Data("request\n".utf8),
+                to: writer.fileDescriptor
+            )
+        )
+        writer.closeFile()
+    }
+
+    func testRunAppServerTerminatesDescendantProcessesOnTimeout() throws {
+        let executable = tempDir.appendingPathComponent("wrapper-codex")
+        let childPIDFile = tempDir.appendingPathComponent("child.pid")
+        let script = """
+        #!/bin/sh
+        /bin/sh -c 'trap "" TERM; exec /bin/sleep 30' &
+        child=$!
+        printf '%s' "$child" > '\(childPIDFile.path)'
+        wait "$child"
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        XCTAssertNil(CodexUsageProvider.runAppServer(executableURL: executable, timeout: 1))
+
+        let childPID = try XCTUnwrap(
+            Int32(try String(contentsOf: childPIDFile, encoding: .utf8))
+        )
+        XCTAssertEqual(kill(childPID, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+    }
+
+    func testFindCodexExecutableUsesPathAndKnownUserLocations() throws {
+        let pathDirectory = tempDir.appendingPathComponent("path-bin")
+        try FileManager.default.createDirectory(at: pathDirectory, withIntermediateDirectories: true)
+        let pathExecutable = pathDirectory.appendingPathComponent("codex")
+        try "#!/bin/sh\n".write(to: pathExecutable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: pathExecutable.path
+        )
+
+        XCTAssertEqual(
+            CodexUsageProvider.findCodexExecutable(
+                environment: ["PATH": pathDirectory.path],
+                homeDirectory: tempDir
+            ),
+            pathExecutable
+        )
+
+        try FileManager.default.removeItem(at: pathExecutable)
+        let supersetDirectory = tempDir.appendingPathComponent(".superset/bin")
+        try FileManager.default.createDirectory(at: supersetDirectory, withIntermediateDirectories: true)
+        let supersetExecutable = supersetDirectory.appendingPathComponent("codex")
+        try "#!/bin/sh\n".write(to: supersetExecutable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: supersetExecutable.path
+        )
+
+        XCTAssertEqual(
+            CodexUsageProvider.findCodexExecutable(
+                environment: ["PATH": ""],
+                homeDirectory: tempDir
+            ),
+            supersetExecutable
+        )
+
+        let nvmDirectory = tempDir.appendingPathComponent(".nvm/versions/node/v20/bin")
+        try FileManager.default.createDirectory(at: nvmDirectory, withIntermediateDirectories: true)
+        let nvmExecutable = nvmDirectory.appendingPathComponent("codex")
+        try "#!/usr/bin/env node\n".write(to: nvmExecutable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: nvmExecutable.path
+        )
+
+        let selectedExecutable = CodexUsageProvider.findCodexExecutable(
+            environment: ["PATH": supersetDirectory.path],
+            homeDirectory: tempDir
+        )
+        XCTAssertTrue(
+            selectedExecutable?.path.hasSuffix("/.nvm/versions/node/v20/bin/codex") == true
+        )
+    }
+
     func testUsesLatestRateLimitsFromMostRecentFile() async throws {
         let dateDir = tempDir.appendingPathComponent("2026/02/13")
         try FileManager.default.createDirectory(at: dateDir, withIntermediateDirectories: true)
@@ -281,6 +478,18 @@ final class CodexUsageProviderTests: XCTestCase {
             sessionsDir: URL(fileURLWithPath: "/nonexistent/path"),
             defaults: testDefaults
         )
+        let isConfigured = await provider.isConfigured()
+        XCTAssertFalse(isConfigured)
+    }
+
+    func testIsNotConfiguredWhenExecutableAndSessionsAreMissing() async {
+        let missingSessions = tempDir.appendingPathComponent("missing-sessions")
+        let provider = CodexUsageProvider(
+            sessionsDir: missingSessions,
+            defaults: testDefaults,
+            codexExecutableProvider: { nil }
+        )
+
         let isConfigured = await provider.isConfigured()
         XCTAssertFalse(isConfigured)
     }

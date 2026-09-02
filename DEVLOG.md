@@ -2,6 +2,14 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 93: Fetch live Codex rate limits
+- **Live Codex usage**: `CodexUsageProvider` now queries the installed Codex app-server through `account/rateLimits/read`, so usage updates without requiring a new interactive Codex session.
+- **Accurate window classification**: Rate-limit windows are classified by their duration instead of assuming `primary` means 5h and `secondary` means 7d; accounts with only a weekly window no longer show a misleading 5h row.
+- **Resilient fallback**: Local `~/.codex/sessions/` parsing remains available when the app-server cannot be reached, preserving the existing token-based display and cache behavior.
+- **Process hardening**: The app-server runner locates Codex in common CLI locations, completes the JSON-RPC handshake, times out safely, and returns immediately when the child process exits.
+- **Tests added**: Covered live-over-stale replacement, weekly-only classification, executable discovery, JSON-RPC handshake, and early process failure.
+- All 294 executed tests passing; 1 integration test skipped
+
 ## Iteration 92: Align notification delivery and custom sound playback
 - **Notification ordering refactor**: `AgentNotifyNotificationService` now posts `UNNotificationRequest` first, then plays custom sound. This reduces timing skew between Notification Center card creation and audible feedback.
 - **Custom sound preflight**: Added `NotifySoundManager.canPlay(for:service:)` so notification content can choose between custom path (`sound=nil`) and system default (`.default`) before posting.

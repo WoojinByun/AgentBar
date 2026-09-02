@@ -183,7 +183,9 @@ struct ServiceDetailRow: View {
                     .frame(width: 60, height: 8)
             }
 
-            MetricRow(label: data.service.fiveHourLabel, metric: data.fiveHourUsage)
+            if data.showsFiveHourUsage {
+                MetricRow(label: data.service.fiveHourLabel, metric: data.fiveHourUsage)
+            }
             if let weekly = data.weeklyUsage {
                 MetricRow(label: data.service.weeklyLabel, metric: weekly)
             }
