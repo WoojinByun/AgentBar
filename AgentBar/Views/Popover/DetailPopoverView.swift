@@ -183,7 +183,11 @@ struct ServiceDetailRow: View {
                     .frame(width: 60, height: 8)
             }
 
-            MetricRow(label: data.service.fiveHourLabel, metric: data.fiveHourUsage)
+            MetricRow(
+                label: data.service.fiveHourLabel,
+                metric: data.fiveHourUsage,
+                showsExactResetTime: data.service.fiveHourLabel == "5h"
+            )
             if let weekly = data.weeklyUsage {
                 MetricRow(label: data.service.weeklyLabel, metric: weekly)
             }
@@ -195,6 +199,13 @@ struct ServiceDetailRow: View {
 struct MetricRow: View {
     let label: String
     let metric: UsageMetric
+    let showsExactResetTime: Bool
+
+    init(label: String, metric: UsageMetric, showsExactResetTime: Bool = false) {
+        self.label = label
+        self.metric = metric
+        self.showsExactResetTime = showsExactResetTime
+    }
 
     var body: some View {
         HStack {
@@ -219,6 +230,11 @@ struct MetricRow: View {
             if let reset = metric.resetTime {
                 let remaining = reset.timeIntervalSinceNow
                 if remaining > 0 {
+                    if showsExactResetTime {
+                        Text(Self.resetTimestampText(for: reset))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                     Text(formatDuration(remaining))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -232,6 +248,14 @@ struct MetricRow: View {
                 .foregroundStyle(metric.percentage > 0.8 ? .red : .primary)
                 .frame(width: 30, alignment: .trailing)
         }
+    }
+
+    static func resetTimestampText(for resetTime: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "MM/dd HH:mm"
+        return formatter.string(from: resetTime)
     }
 
     private func formatDuration(_ interval: TimeInterval) -> String {

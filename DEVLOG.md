@@ -2,6 +2,12 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 93: Show the exact 5-hour reset time
+- **5-hour reset timestamp**: `MetricRow` now shows the local reset time as `MM/dd HH:mm` immediately before the remaining duration, so the Claude 5-hour session can be read without calculating from the countdown.
+- **Focused display**: The timestamp is enabled only for rows labeled `5h`; weekly and other service windows retain their current layout.
+- **Regression test**: Added coverage for the timestamp format with an explicit time zone.
+- All 287 tests passing
+
 ## Iteration 92: Align notification delivery and custom sound playback
 - **Notification ordering refactor**: `AgentNotifyNotificationService` now posts `UNNotificationRequest` first, then plays custom sound. This reduces timing skew between Notification Center card creation and audible feedback.
 - **Custom sound preflight**: Added `NotifySoundManager.canPlay(for:service:)` so notification content can choose between custom path (`sound=nil`) and system default (`.default`) before posting.

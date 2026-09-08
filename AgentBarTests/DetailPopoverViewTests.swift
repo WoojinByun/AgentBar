@@ -166,6 +166,14 @@ final class DetailPopoverViewTests: XCTestCase {
         XCTAssertEqual(DetailPopoverView.resolvedVersionString(from: [:]), "unknown")
     }
 
+    func testResetTimestampTextShowsLocalDateAndTimeWithoutLabel() {
+        let resetTime = Date(timeIntervalSince1970: 1_788_873_180)
+
+        let text = MetricRow.resetTimestampText(for: resetTime, timeZone: TimeZone(secondsFromGMT: 0)!)
+
+        XCTAssertEqual(text, "09/08 13:13")
+    }
+
     private func makeUsageRows(count: Int) -> [UsageData] {
         let services = ServiceType.allCases
         return (0..<count).map { index in
