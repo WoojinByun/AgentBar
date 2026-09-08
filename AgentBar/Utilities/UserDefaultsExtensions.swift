@@ -15,10 +15,6 @@ enum NotificationSoundMode: String, CaseIterable, Sendable {
     }
 }
 
-enum BuyMeACoffeeSettings {
-    static let hideButtonKey = "hideBuyMeACoffeeButton"
-}
-
 enum CopilotCredentialSettings {
     /// Enables Keychain fallback for Copilot when gh CLI token is unavailable.
     static let manualPATEnabledKey = "copilotManualPATEnabled"

@@ -85,6 +85,37 @@ final class CodexUsageProviderTests: XCTestCase {
         XCTAssertEqual(usage.weeklyUsage!.used, 1_500_000, accuracy: 1)
     }
 
+    func testTreats10080MinutePrimaryWindowAsWeeklyOnly() async throws {
+        let dateDir = tempDir.appendingPathComponent("2026/09/08")
+        try FileManager.default.createDirectory(at: dateDir, withIntermediateDirectories: true)
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let weeklyReset = Int(Date().addingTimeInterval(7 * 24 * 3600).timeIntervalSince1970)
+        let content = """
+        {"timestamp":"\(now)","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":\(weeklyReset)}}}}
+        """
+        let file = dateDir.appendingPathComponent("rollout-test.jsonl")
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let provider = CodexUsageProvider(
+            sessionsDir: tempDir,
+            fiveHourTokenLimit: 10_000_000,
+            weeklyTokenLimit: 100_000_000,
+            defaults: testDefaults
+        )
+        let usage = try await provider.fetchUsage()
+
+        XCTAssertFalse(usage.showsFiveHourUsage)
+        guard let weeklyUsage = usage.weeklyUsage else {
+            return XCTFail("Expected the 7-day Codex window to be displayed.")
+        }
+        guard let resetTime = weeklyUsage.resetTime else {
+            return XCTFail("Expected the 7-day Codex window to include a reset time.")
+        }
+        XCTAssertEqual(weeklyUsage.used, 1_000_000, accuracy: 1)
+        XCTAssertEqual(resetTime.timeIntervalSince1970, Double(weeklyReset), accuracy: 1)
+    }
+
     func testResetWindowMeansZeroUsage() async throws {
         let dateDir = tempDir.appendingPathComponent("2026/02/13")
         try FileManager.default.createDirectory(at: dateDir, withIntermediateDirectories: true)

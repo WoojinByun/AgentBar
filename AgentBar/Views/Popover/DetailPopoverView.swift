@@ -2,20 +2,9 @@ import SwiftUI
 
 struct DetailPopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
-    @AppStorage(BuyMeACoffeeSettings.hideButtonKey) private var hideBuyMeACoffeeButton = false
-    private let openExternalURL: (URL) -> Void
+    static let popoverWidth: CGFloat = 416
     private var displayUsageData: [UsageData] {
         Self.sortedForDisplay(viewModel.usageData)
-    }
-
-    init(
-        viewModel: UsageViewModel,
-        openExternalURL: @escaping (URL) -> Void = { url in
-            NSWorkspace.shared.open(url)
-        }
-    ) {
-        self.viewModel = viewModel
-        self.openExternalURL = openExternalURL
     }
 
     var body: some View {
@@ -52,17 +41,6 @@ struct DetailPopoverView: View {
 
             Spacer(minLength: 0)
 
-            if !hideBuyMeACoffeeButton {
-                // Buy Me a Coffee
-                Button(action: openBMC) {
-                    Label("Buy Me a Coffee", systemImage: "cup.and.saucer.fill")
-                        .font(.caption)
-                }
-                .buttonStyle(.bordered)
-                .foregroundStyle(.orange)
-                .frame(maxWidth: .infinity)
-            }
-
             // Footer
             Divider()
 
@@ -90,19 +68,13 @@ struct DetailPopoverView: View {
             }
         }
         .padding()
-        .frame(width: 320, height: 480)
+        .frame(width: Self.popoverWidth, height: 480)
     }
 
     private func openSettings() {
         PopoverController.shared.hide()
         SettingsWindowController.shared.show()
     }
-
-    private func openBMC() {
-        openExternalURL(Self.bmcSupportURL)
-    }
-
-    private static let bmcSupportURL = URL(string: "https://buymeacoffee.com/_scari")!
 
     static func sortedForDisplay(_ usageData: [UsageData]) -> [UsageData] {
         let serviceOrder: [ServiceType] = [.claude, .codex, .gemini, .copilot, .cursor, .opencode, .zai]
@@ -120,12 +92,8 @@ struct DetailPopoverView: View {
     }
 
     #if DEBUG
-    func triggerBMCForTesting() {
-        openBMC()
-    }
-
     func isBMCButtonVisibleForTesting() -> Bool {
-        !hideBuyMeACoffeeButton
+        false
     }
     #endif
 
@@ -183,11 +151,13 @@ struct ServiceDetailRow: View {
                     .frame(width: 60, height: 8)
             }
 
-            MetricRow(
-                label: data.service.fiveHourLabel,
-                metric: data.fiveHourUsage,
-                showsExactResetTime: data.service.fiveHourLabel == "5h"
-            )
+            if data.showsFiveHourUsage {
+                MetricRow(
+                    label: data.service.fiveHourLabel,
+                    metric: data.fiveHourUsage,
+                    showsExactResetTime: data.service.fiveHourLabel == "5h"
+                )
+            }
             if let weekly = data.weeklyUsage {
                 MetricRow(label: data.service.weeklyLabel, metric: weekly)
             }

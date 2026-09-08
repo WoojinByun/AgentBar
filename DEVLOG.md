@@ -2,6 +2,12 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 94: Correct Codex window mapping and simplify the popover
+- **Codex rate-window mapping**: Classifies local Codex `rate_limits` by `window_minutes`; a 10,080-minute primary window now displays as the sole 7-day row instead of an incorrect 5-hour row plus stale cached data.
+- **Popover layout**: Increased the popover width from 320pt to 416pt so reset timestamps remain on one line, and removed the Buy Me a Coffee button and its Settings toggle.
+- **Regression tests**: Added coverage for a Codex primary-only 7-day window, removed-support-button state, and popover width.
+- All 287 tests passing
+
 ## Iteration 93: Show the exact 5-hour reset time
 - **5-hour reset timestamp**: `MetricRow` now shows the local reset time as `MM/dd HH:mm` immediately before the remaining duration, so the Claude 5-hour session can be read without calculating from the countdown.
 - **Focused display**: The timestamp is enabled only for rows labeled `5h`; weekly and other service windows retain their current layout.

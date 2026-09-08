@@ -41,7 +41,6 @@ struct SettingsView: View {
     @AppStorage("cursorMonthlyLimit") private var cursorMonthlyLimit: Double = 500
 
     @AppStorage("zaiEnabled") private var zaiEnabled = true
-    @AppStorage(BuyMeACoffeeSettings.hideButtonKey) private var hideBuyMeACoffeeButton = false
 
     @State private var selectedTab: SettingsTab = .usage
     #if AGENTBAR_NOTIFICATION_SOUNDS
@@ -316,13 +315,6 @@ struct SettingsView: View {
                     .disabled(!Self.canSaveToken(zaiAPIKey))
                 }
                 Text("Plan and limits are auto-detected from Z.ai API")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Support") {
-                Toggle("Hide Buy Me a Coffee button", isOn: $hideBuyMeACoffeeButton)
-                Text("If you've already donated and the BMC button feels distracting, you can hide it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

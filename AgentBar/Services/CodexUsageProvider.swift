@@ -81,27 +81,42 @@ final class CodexUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
         let fiveHourMetric: UsageMetric
         let weeklyMetric: UsageMetric
+        let showsFiveHourUsage: Bool
 
         if let rateLimits = latestRateLimits {
-            let (primaryUsed, primaryReset) = resolveAggregatedWindow(
-                windows: rateLimits.compactMap(\.primary),
-                tokenLimit: fiveHourTokenLimit,
-                now: now
-            )
-            fiveHourMetric = resolveMetric(
-                used: primaryUsed, total: fiveHourTokenLimit,
-                resetTime: primaryReset, cacheKey: "codexUsageCache.fiveHour", now: now
-            )
+            let windows = rateLimits.flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
+            let fiveHourWindows = windows.filter { $0.window_minutes == 300 }
+            let weeklyWindows = windows.filter { $0.window_minutes == 10_080 }
 
-            let (secondaryUsed, secondaryReset) = resolveAggregatedWindow(
-                windows: rateLimits.compactMap(\.secondary),
-                tokenLimit: weeklyTokenLimit,
-                now: now
-            )
-            weeklyMetric = resolveMetric(
-                used: secondaryUsed, total: weeklyTokenLimit,
-                resetTime: secondaryReset, cacheKey: "codexUsageCache.weekly", now: now
-            )
+            if !fiveHourWindows.isEmpty || !weeklyWindows.isEmpty {
+                fiveHourMetric = resolveMetric(
+                    windows: fiveHourWindows,
+                    tokenLimit: fiveHourTokenLimit,
+                    cacheKey: "codexUsageCache.fiveHour",
+                    now: now
+                )
+                weeklyMetric = resolveMetric(
+                    windows: weeklyWindows,
+                    tokenLimit: weeklyTokenLimit,
+                    cacheKey: "codexUsageCache.weekly",
+                    now: now
+                )
+                showsFiveHourUsage = !fiveHourWindows.isEmpty
+            } else {
+                fiveHourMetric = resolveMetric(
+                    windows: rateLimits.compactMap(\.primary),
+                    tokenLimit: fiveHourTokenLimit,
+                    cacheKey: "codexUsageCache.fiveHour",
+                    now: now
+                )
+                weeklyMetric = resolveMetric(
+                    windows: rateLimits.compactMap(\.secondary),
+                    tokenLimit: weeklyTokenLimit,
+                    cacheKey: "codexUsageCache.weekly",
+                    now: now
+                )
+                showsFiveHourUsage = true
+            }
         } else {
             // Fallback: sum tokens from session files
             let (fiveHour, weekly) = sumTokensFromSessions(now: now)
@@ -113,6 +128,7 @@ final class CodexUsageProvider: UsageProviderProtocol, @unchecked Sendable {
                 used: Double(weekly), total: weeklyTokenLimit,
                 resetTime: nil, cacheKey: "codexUsageCache.weekly", now: now
             )
+            showsFiveHourUsage = true
         }
 
         let planName = (defaults.string(forKey: "codexPlan")
@@ -124,11 +140,25 @@ final class CodexUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             weeklyUsage: weeklyMetric,
             lastUpdated: now,
             isAvailable: true,
-            planName: planName
+            planName: planName,
+            showsFiveHourUsage: showsFiveHourUsage
         )
     }
 
     // MARK: - Metric Caching
+
+    private func resolveMetric(
+        windows: [CodexRateWindow],
+        tokenLimit: Double,
+        cacheKey: String,
+        now: Date
+    ) -> UsageMetric {
+        guard !windows.isEmpty else {
+            return UsageMetric(used: 0, total: tokenLimit, unit: .tokens, resetTime: nil)
+        }
+        let (used, resetTime) = resolveAggregatedWindow(windows: windows, tokenLimit: tokenLimit, now: now)
+        return resolveMetric(used: used, total: tokenLimit, resetTime: resetTime, cacheKey: cacheKey, now: now)
+    }
 
     private func resolveMetric(
         used: Double, total: Double, resetTime: Date?,
