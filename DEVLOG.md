@@ -2,6 +2,11 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 98: Publish the fork changes on main
+- **Default branch**: Prepared the existing fork changes for fast-forward integration into the personal repository's `main`, preserving its existing history.
+- **Installation guide**: Updated repository links, clone/update commands, and troubleshooting to use `main`; documented how users of the former branch can obtain a fresh main clone without discarding local changes.
+- All 285 tests passing (1 skipped)
+
 ## Iteration 97: Document standalone installation of the personal fork
 - **Fork-specific setup**: Replaced the upstream DMG install instruction with the exact personal branch clone, Xcode prerequisites, ad-hoc Debug build, per-user Applications installation, backup, and update commands.
 - **Account setup and troubleshooting**: Documented Codex CLI installation and ChatGPT login, Claude Keychain access, server quota/reset-credit behavior, stale data, CLI discovery, and old app copies.

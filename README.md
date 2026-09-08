@@ -6,7 +6,7 @@
 
 macOS menu bar app that tracks AI coding assistant usage in one place.
 
-This is [WoojinByun's fork](https://github.com/WoojinByun/AgentBar/tree/WoojinByun/AgentBar) of [scari/AgentBar](https://github.com/scari/AgentBar). The changes below live on the **`WoojinByun/AgentBar` branch**, not `main`. Use the branch link when sharing this version.
+This is [WoojinByun's fork](https://github.com/WoojinByun/AgentBar) of [scari/AgentBar](https://github.com/scari/AgentBar). The changes below are included in the default **`main` branch**. Share this repository's main page to get this version and its installation guide.
 
 ## Changes in this fork
 
@@ -74,7 +74,7 @@ The Xcode project is checked into the repository; XcodeGen is not needed for ins
 Run these commands in Terminal from a directory where you want to keep the source. Stop and resolve any error before continuing to the next step.
 
 ```sh
-git clone --single-branch --branch WoojinByun/AgentBar https://github.com/WoojinByun/AgentBar.git
+git clone --single-branch --branch main https://github.com/WoojinByun/AgentBar.git
 cd AgentBar
 xcodebuild build -project AgentBar.xcodeproj -scheme AgentBar -configuration Debug -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= -quiet
 ```
@@ -138,7 +138,7 @@ Other services can be configured individually in Settings; they are not required
 From the clone created in step 2:
 
 ```sh
-git pull --ff-only origin WoojinByun/AgentBar
+git pull --ff-only origin main
 xcodebuild build -project AgentBar.xcodeproj -scheme AgentBar -configuration Debug -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= -quiet
 ```
 
@@ -146,7 +146,7 @@ If both commands succeed, repeat step 3 to replace and relaunch the installed ap
 
 ### Troubleshooting
 
-- **Old UI still appears:** confirm `git branch --show-current` prints `WoojinByun/AgentBar`, repeat build/install, and launch `~/Applications/AgentBar.app` explicitly. The popover footer shows the build's Git commit hash; compare it with `git rev-parse --short HEAD`.
+- **Old UI still appears:** confirm `git branch --show-current` prints `main`, repeat build/install, and launch `~/Applications/AgentBar.app` explicitly. The popover footer shows the build's Git commit hash; compare it with `git rev-parse --short HEAD`. If you cloned the former `WoojinByun/AgentBar` branch, use a new clone following step 2 from a different parent directory; keep any local changes in the old clone.
 - **`xcodebuild` requires Xcode / Swift compiler errors:** check step 1 and use a full Xcode installation with Swift 6 support.
 - **Signing asks for a development team:** use the exact Debug build command above, including the three signing overrides. The release scripts are for signed/notarized distribution and are not needed here.
 - **Codex usage unavailable:** run `command -v codex`, `codex --version`, and `codex login status`; confirm a ChatGPT login, network access, and a CLI version supporting App Server quota reads. Restart AgentBar after installing or updating the CLI.
