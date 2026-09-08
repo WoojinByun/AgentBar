@@ -1,403 +1,243 @@
 import Foundation
+import Darwin
 
-// MARK: - Codex Session Record Models (matches actual ~/.codex/sessions/ JSONL)
+actor CodexUsageProvider: UsageProviderProtocol {
+    nonisolated let serviceType: ServiceType = .codex
+    private let readRateLimits: @Sendable () async throws -> Data
+    private var lastSuccessfulUsage: UsageData?
 
-struct CodexSessionRecord: Decodable, Sendable {
-    let timestamp: String?
-    let type: String?
-    let payload: CodexPayload?
-}
-
-struct CodexPayload: Decodable, Sendable {
-    let type: String?
-    let info: CodexTokenInfo?
-    let rate_limits: CodexRateLimits?
-}
-
-struct CodexTokenInfo: Decodable, Sendable {
-    let total_token_usage: CodexTokenUsage?
-    let last_token_usage: CodexTokenUsage?
-}
-
-struct CodexTokenUsage: Decodable, Sendable {
-    let input_tokens: Int?
-    let output_tokens: Int?
-    let cached_input_tokens: Int?
-    let reasoning_output_tokens: Int?
-    let total_tokens: Int?
-
-    var totalTokens: Int {
-        (input_tokens ?? 0) +
-        (cached_input_tokens ?? 0) +
-        (output_tokens ?? 0) +
-        (reasoning_output_tokens ?? 0)
-    }
-}
-
-struct CodexRateLimits: Decodable, Sendable {
-    let limit_id: String?
-    let primary: CodexRateWindow?
-    let secondary: CodexRateWindow?
-}
-
-struct CodexRateWindow: Decodable, Sendable {
-    let used_percent: Double?
-    let window_minutes: Int?
-    let resets_at: Int?
-}
-
-// MARK: - Provider
-
-final class CodexUsageProvider: UsageProviderProtocol, @unchecked Sendable {
-    let serviceType: ServiceType = .codex
-
-    private let sessionsDir: URL
-    private let fiveHourTokenLimit: Double
-    private let weeklyTokenLimit: Double
-    private let defaults: UserDefaults
-
-    init(
-        sessionsDir: URL? = nil,
-        fiveHourTokenLimit: Double = 10_000_000,
-        weeklyTokenLimit: Double = 100_000_000,
-        defaults: UserDefaults = .standard
-    ) {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        self.sessionsDir = sessionsDir ?? home.appendingPathComponent(".codex/sessions")
-        self.fiveHourTokenLimit = fiveHourTokenLimit
-        self.weeklyTokenLimit = weeklyTokenLimit
-        self.defaults = defaults
+    init(readRateLimits: @escaping @Sendable () async throws -> Data = {
+        try await CodexAppServerClient().readRateLimits()
+    }) {
+        self.readRateLimits = readRateLimits
     }
 
-    func isConfigured() async -> Bool {
-        FileManager.default.fileExists(atPath: sessionsDir.path)
-    }
+    func isConfigured() async -> Bool { true }
 
     func fetchUsage() async throws -> UsageData {
-        let now = Date()
-
-        // Find the most recent rate_limits from session files
-        let latestRateLimits = findLatestRateLimits(now: now)
-
-        let fiveHourMetric: UsageMetric
-        let weeklyMetric: UsageMetric
-        let showsFiveHourUsage: Bool
-
-        if let rateLimits = latestRateLimits {
-            let windows = rateLimits.flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
-            let fiveHourWindows = windows.filter { $0.window_minutes == 300 }
-            let weeklyWindows = windows.filter { $0.window_minutes == 10_080 }
-
-            if !fiveHourWindows.isEmpty || !weeklyWindows.isEmpty {
-                fiveHourMetric = resolveMetric(
-                    windows: fiveHourWindows,
-                    tokenLimit: fiveHourTokenLimit,
-                    cacheKey: "codexUsageCache.fiveHour",
-                    now: now
-                )
-                weeklyMetric = resolveMetric(
-                    windows: weeklyWindows,
-                    tokenLimit: weeklyTokenLimit,
-                    cacheKey: "codexUsageCache.weekly",
-                    now: now
-                )
-                showsFiveHourUsage = !fiveHourWindows.isEmpty
-            } else {
-                fiveHourMetric = resolveMetric(
-                    windows: rateLimits.compactMap(\.primary),
-                    tokenLimit: fiveHourTokenLimit,
-                    cacheKey: "codexUsageCache.fiveHour",
-                    now: now
-                )
-                weeklyMetric = resolveMetric(
-                    windows: rateLimits.compactMap(\.secondary),
-                    tokenLimit: weeklyTokenLimit,
-                    cacheKey: "codexUsageCache.weekly",
-                    now: now
-                )
-                showsFiveHourUsage = true
+        do {
+            let response = try JSONDecoder().decode(CodexLiveRateLimits.self, from: await readRateLimits())
+            guard let bucket = response.rateLimitsByLimitId?["codex"] ?? response.rateLimits else {
+                throw CodexUsageError.invalidResponse
             }
-        } else {
-            // Fallback: sum tokens from session files
-            let (fiveHour, weekly) = sumTokensFromSessions(now: now)
-            fiveHourMetric = resolveMetric(
-                used: Double(fiveHour), total: fiveHourTokenLimit,
-                resetTime: nil, cacheKey: "codexUsageCache.fiveHour", now: now
+            let windows = [bucket.primary, bucket.secondary].compactMap { $0 }
+            guard !windows.isEmpty,
+                  windows.allSatisfy({ $0.usedPercent.isFinite && $0.usedPercent >= 0 && ($0.windowDurationMins ?? 0) > 0 })
+            else { throw CodexUsageError.invalidResponse }
+
+            // Slot names are historical; the labels always follow the server's actual duration.
+            let weeklyOnly = windows.count == 1 && windows[0].windowDurationMins == 10_080
+            let first = weeklyOnly ? nil : windows.first
+            let second = weeklyOnly ? windows.first : windows.dropFirst().first
+            let usage = UsageData(
+                service: .codex,
+                fiveHourUsage: first?.metric ?? .zero,
+                weeklyUsage: second?.metric,
+                lastUpdated: Date(),
+                isAvailable: true,
+                planName: bucket.displayPlan,
+                showsFiveHourUsage: first != nil,
+                primaryLabel: first?.label,
+                secondaryLabel: second?.label,
+                resetCredits: response.rateLimitResetCredits
             )
-            weeklyMetric = resolveMetric(
-                used: Double(weekly), total: weeklyTokenLimit,
-                resetTime: nil, cacheKey: "codexUsageCache.weekly", now: now
+            lastSuccessfulUsage = usage
+            return usage
+        } catch {
+            return UsageData(
+                service: .codex,
+                fiveHourUsage: lastSuccessfulUsage?.fiveHourUsage ?? .zero,
+                weeklyUsage: lastSuccessfulUsage?.weeklyUsage,
+                lastUpdated: lastSuccessfulUsage?.lastUpdated ?? Date(),
+                isAvailable: false,
+                planName: lastSuccessfulUsage?.planName,
+                showsFiveHourUsage: lastSuccessfulUsage?.showsFiveHourUsage ?? false,
+                primaryLabel: lastSuccessfulUsage?.primaryLabel,
+                secondaryLabel: lastSuccessfulUsage?.secondaryLabel,
+                resetCredits: lastSuccessfulUsage?.resetCredits,
+                statusMessage: lastSuccessfulUsage == nil
+                    ? "Usage unavailable — check Codex login"
+                    : "Update failed — showing last known usage"
             )
-            showsFiveHourUsage = true
         }
+    }
+}
 
-        let planName = (defaults.string(forKey: "codexPlan")
-            .flatMap { CodexPlan(rawValue: $0) } ?? .pro).rawValue
+private struct CodexLiveRateLimits: Decodable {
+    let rateLimits: CodexLiveBucket?
+    let rateLimitsByLimitId: [String: CodexLiveBucket]?
+    let rateLimitResetCredits: UsageResetCredits?
+}
 
-        return UsageData(
-            service: .codex,
-            fiveHourUsage: fiveHourMetric,
-            weeklyUsage: weeklyMetric,
-            lastUpdated: now,
-            isAvailable: true,
-            planName: planName,
-            showsFiveHourUsage: showsFiveHourUsage
-        )
+private struct CodexLiveBucket: Decodable {
+    let primary: CodexLiveWindow?
+    let secondary: CodexLiveWindow?
+    let planType: String?
+
+    var displayPlan: String? {
+        guard let planType else { return nil }
+        if planType.contains("business") { return "Business" }
+        switch planType {
+        case "pro": return "Pro"
+        case "plus": return "Plus"
+        case "team": return "Team"
+        case "enterprise": return "Enterprise"
+        case "free": return "Free"
+        default: return nil
+        }
+    }
+}
+
+private struct CodexLiveWindow: Decodable {
+    let usedPercent: Double
+    let windowDurationMins: Int?
+    let resetsAt: Double?
+
+    var metric: UsageMetric {
+        UsageMetric(used: usedPercent, total: 100, unit: .percent,
+                    resetTime: resetsAt.map { Date(timeIntervalSince1970: $0) })
     }
 
-    // MARK: - Metric Caching
+    var label: String {
+        let minutes = windowDurationMins ?? 0
+        if minutes % 1_440 == 0 { return "\(minutes / 1_440)d" }
+        if minutes % 60 == 0 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
+    }
+}
 
-    private func resolveMetric(
-        windows: [CodexRateWindow],
-        tokenLimit: Double,
-        cacheKey: String,
-        now: Date
-    ) -> UsageMetric {
-        guard !windows.isEmpty else {
-            return UsageMetric(used: 0, total: tokenLimit, unit: .tokens, resetTime: nil)
-        }
-        let (used, resetTime) = resolveAggregatedWindow(windows: windows, tokenLimit: tokenLimit, now: now)
-        return resolveMetric(used: used, total: tokenLimit, resetTime: resetTime, cacheKey: cacheKey, now: now)
+enum CodexUsageError: Error {
+    case executableMissing
+    case timedOut
+    case disconnected
+    case invalidResponse
+    case serverError
+}
+
+/// One short-lived stdio connection per refresh; no conversation or model turn is started.
+struct CodexAppServerClient: Sendable {
+    let executableURL: URL?
+    let timeout: TimeInterval
+
+    init(executableURL: URL? = nil, timeout: TimeInterval = 15) {
+        self.executableURL = executableURL
+        self.timeout = timeout
     }
 
-    private func resolveMetric(
-        used: Double, total: Double, resetTime: Date?,
-        cacheKey: String, now: Date
-    ) -> UsageMetric {
-        let cached = validCachedMetric(forKey: cacheKey, now: now)
-        let incoming = UsageMetric(used: used, total: total, unit: .tokens, resetTime: resetTime)
-
-        if shouldPreferCachedMetric(cached, over: incoming, now: now) {
-            return cached!
-        }
-
-        if incoming.used > 0 {
-            saveMetricCache(incoming, forKey: cacheKey)
-        }
-        return incoming
-    }
-
-    private func shouldPreferCachedMetric(
-        _ cached: UsageMetric?, over incoming: UsageMetric, now: Date
-    ) -> Bool {
-        guard let cached, cached.used > 0 else { return false }
-        guard let cachedReset = cached.resetTime, cachedReset > now else { return false }
-        guard incoming.used <= 0 else { return false }
-        // Cached value still valid (reset not yet passed) and incoming is zero —
-        // prefer cached. validCachedMetric already clears expired entries.
-        return true
-    }
-
-    private func validCachedMetric(forKey key: String, now: Date) -> UsageMetric? {
-        guard let cached = loadMetricCache(forKey: key) else { return nil }
-
-        if let reset = cached.resetTime, reset <= now {
-            clearMetricCache(forKey: key)
-            return nil
-        }
-
-        if cached.used <= 0, cached.resetTime == nil {
-            clearMetricCache(forKey: key)
-            return nil
-        }
-
-        return cached
-    }
-
-    private func saveMetricCache(_ metric: UsageMetric, forKey key: String) {
-        defaults.set(metric.used, forKey: "\(key).used")
-        defaults.set(metric.total, forKey: "\(key).total")
-        defaults.set(metric.resetTime?.timeIntervalSince1970, forKey: "\(key).resetTime")
-    }
-
-    private func loadMetricCache(forKey key: String) -> UsageMetric? {
-        guard defaults.object(forKey: "\(key).used") != nil else { return nil }
-        let used = defaults.double(forKey: "\(key).used")
-        let total = defaults.object(forKey: "\(key).total") != nil
-            ? defaults.double(forKey: "\(key).total") : fiveHourTokenLimit
-        let resetTimestamp = defaults.object(forKey: "\(key).resetTime") as? Double
-        let resetTime = resetTimestamp.map { Date(timeIntervalSince1970: $0) }
-        return UsageMetric(used: used, total: total, unit: .tokens, resetTime: resetTime)
-    }
-
-    private func clearMetricCache(forKey key: String) {
-        defaults.removeObject(forKey: "\(key).used")
-        defaults.removeObject(forKey: "\(key).total")
-        defaults.removeObject(forKey: "\(key).resetTime")
-    }
-
-    // MARK: - Window Resolution
-
-    /// Resolve a rate window: advance stale resets_at by window_minutes until future.
-    private func resolveWindow(
-        window: CodexRateWindow, tokenLimit: Double, now: Date
-    ) -> (used: Double, resetTime: Date?) {
-        let usedPercent = window.used_percent ?? 0
-        let used = tokenLimit * usedPercent / 100.0
-
-        guard let resetsAt = window.resets_at else {
-            return (used, nil)
-        }
-
-        var resetDate = Date(timeIntervalSince1970: TimeInterval(resetsAt))
-
-        if resetDate > now {
-            return (used, resetDate)
-        }
-
-        // resets_at is stale — advance by window intervals to find next reset
-        if let windowMinutes = window.window_minutes, windowMinutes > 0 {
-            let windowSeconds = TimeInterval(windowMinutes) * 60
-            while resetDate <= now {
-                resetDate = resetDate.addingTimeInterval(windowSeconds)
+    func readRateLimits() async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do { continuation.resume(returning: try self.readSynchronously()) }
+                catch { continuation.resume(throwing: error) }
             }
-            // Window has rolled over; usage from the old window is stale
-            return (0, resetDate)
         }
-
-        // No window_minutes to advance with — window has reset
-        return (0, nil)
     }
 
-    /// Resolve multiple windows independently and aggregate active usage.
-    private func resolveAggregatedWindow(
-        windows: [CodexRateWindow], tokenLimit: Double, now: Date
-    ) -> (used: Double, resetTime: Date?) {
-        guard !windows.isEmpty else { return (0, nil) }
+    private func readSynchronously() throws -> Data {
+        guard let executable = executableURL ?? Self.findExecutable() else {
+            throw CodexUsageError.executableMissing
+        }
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        let ended = DispatchSemaphore(value: 0)
+        process.executableURL = executable
+        process.arguments = ["app-server", "--listen", "stdio://"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = executable.deletingLastPathComponent().path + ":" +
+            (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        process.environment = environment
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in ended.signal() }
+        // A server exiting during a request must produce an error, not SIGPIPE in the menu bar app.
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
 
-        var totalUsed: Double = 0
-        var earliestActiveReset: Date?
-        var earliestAnyReset: Date?
-
-        for window in windows {
-            let (used, resetTime) = resolveWindow(window: window, tokenLimit: tokenLimit, now: now)
-            totalUsed += used
-
-            if let resetTime {
-                if let current = earliestAnyReset {
-                    earliestAnyReset = min(current, resetTime)
-                } else {
-                    earliestAnyReset = resetTime
+        defer {
+            try? input.fileHandleForWriting.close()
+            try? input.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
+            try? output.fileHandleForReading.close()
+            if process.isRunning && ended.wait(timeout: .now() + 0.25) == .timedOut {
+                process.terminate()
+                if ended.wait(timeout: .now() + 0.25) == .timedOut && process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = ended.wait(timeout: .now() + 0.25)
                 }
+            }
+        }
+        try process.run()
+        try input.fileHandleForReading.close()
+        try output.fileHandleForWriting.close()
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        var buffer = Data()
 
-                if used > 0 {
-                    if let current = earliestActiveReset {
-                        earliestActiveReset = min(current, resetTime)
-                    } else {
-                        earliestActiveReset = resetTime
+        func send(_ message: [String: Any]) throws {
+            var data = try JSONSerialization.data(withJSONObject: message)
+            data.append(0x0A)
+            try input.fileHandleForWriting.write(contentsOf: data)
+        }
+
+        func response(id: Int) throws -> Data {
+            while ProcessInfo.processInfo.systemUptime < deadline {
+                while let newline = buffer.firstIndex(of: 0x0A) {
+                    let line = buffer[..<newline]
+                    buffer.removeSubrange(...newline)
+                    guard !line.isEmpty else { continue }
+                    guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+                        throw CodexUsageError.invalidResponse
                     }
+                    guard object["id"] as? Int == id else { continue }
+                    if object["error"] != nil { throw CodexUsageError.serverError }
+                    guard let result = object["result"] as? [String: Any] else {
+                        throw CodexUsageError.invalidResponse
+                    }
+                    return try JSONSerialization.data(withJSONObject: result)
                 }
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { break }
+                var descriptor = pollfd(fd: output.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, Int32(min(remaining * 1_000, 1_000)))
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    throw CodexUsageError.disconnected
+                }
+                if ready == 0 { continue }
+                var bytes = [UInt8](repeating: 0, count: 8_192)
+                let count = Darwin.read(descriptor.fd, &bytes, bytes.count)
+                guard count > 0 else { throw CodexUsageError.disconnected }
+                buffer.append(contentsOf: bytes.prefix(count))
+                guard buffer.count <= 1_048_576 else { throw CodexUsageError.invalidResponse }
             }
+            throw CodexUsageError.timedOut
         }
 
-        return (totalUsed, earliestActiveReset ?? earliestAnyReset)
+        try send(["id": 1, "method": "initialize", "params": [
+            "clientInfo": ["name": "agentbar", "title": "AgentBar", "version": "1.0"]
+        ]])
+        _ = try response(id: 1)
+        try send(["method": "initialized", "params": [:]])
+        try send(["id": 2, "method": "account/rateLimits/read"])
+        return try response(id: 2)
     }
 
-    // MARK: - Rate Limits Extraction
-
-    private func findLatestRateLimits(now: Date) -> [CodexRateLimits]? {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: sessionsDir.path) else { return nil }
-
-        let recentFiles = findSessionFiles(within: 7 * 24 * 3600, relativeTo: now)
-        guard !recentFiles.isEmpty else { return nil }
-
-        // Check the most recent file first (sorted by path descending = most recent date first)
-        let sorted = recentFiles.sorted { $0.lastPathComponent > $1.lastPathComponent }
-
-        for file in sorted {
-            if let rateLimits = extractLatestRateLimits(from: file) {
-                return rateLimits
-            }
+    static func findExecutable() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var directories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init)
+        directories += [home.appendingPathComponent(".local/bin").path, "/opt/homebrew/bin", "/usr/local/bin"]
+        let nodeVersions = home.appendingPathComponent(".nvm/versions/node")
+        let versions = (try? FileManager.default.contentsOfDirectory(
+            at: nodeVersions, includingPropertiesForKeys: nil
+        )) ?? []
+        directories += versions.sorted {
+            $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending
+        }.map { $0.appendingPathComponent("bin").path }
+        for directory in directories {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent("codex")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
         }
-
         return nil
-    }
-
-    private func extractLatestRateLimits(from file: URL) -> [CodexRateLimits]? {
-        guard let records = try? JSONLParser.parseFile(file, as: CodexSessionRecord.self) else {
-            return nil
-        }
-
-        // Track the latest rate_limits per limit_id.
-        // Codex sessions may interleave multiple limit_ids (e.g. "codex",
-        // "codex_bengalfox") with independent usage counters, so we keep each
-        // limit_id's latest entry and resolve/aggregate windows afterward.
-        var latestByLimitID: [String: CodexRateLimits] = [:]
-        for record in records {
-            guard record.type == "event_msg",
-                  record.payload?.type == "token_count",
-                  let rl = record.payload?.rate_limits else { continue }
-            let key = rl.limit_id ?? ""
-            latestByLimitID[key] = rl
-        }
-
-        guard !latestByLimitID.isEmpty else { return nil }
-        return Array(latestByLimitID.values)
-    }
-
-    // MARK: - Token Summing Fallback
-
-    private func sumTokensFromSessions(now: Date) -> (fiveHour: Int, weekly: Int) {
-        let fiveHourCutoff = DateUtils.fiveHourWindowStart(relativeTo: now)
-        let weeklyCutoff = DateUtils.weeklyWindowStart(relativeTo: now)
-
-        let files = findSessionFiles(within: 7 * 24 * 3600, relativeTo: now)
-        var fiveHourTotal = 0
-        var weeklyTotal = 0
-
-        for file in files {
-            let records = (try? JSONLParser.parseFile(file, as: CodexSessionRecord.self)) ?? []
-            for record in records {
-                guard record.type == "event_msg",
-                      record.payload?.type == "token_count",
-                      let info = record.payload?.info,
-                      let lastUsage = info.last_token_usage,
-                      let ts = record.timestamp,
-                      let date = DateUtils.parseISO8601(ts) else { continue }
-
-                let tokens = lastUsage.totalTokens
-                if date >= fiveHourCutoff && date <= now {
-                    fiveHourTotal += tokens
-                }
-                if date >= weeklyCutoff && date <= now {
-                    weeklyTotal += tokens
-                }
-            }
-        }
-
-        return (fiveHourTotal, weeklyTotal)
-    }
-
-    // MARK: - Directory Traversal
-
-    private func findSessionFiles(within seconds: TimeInterval, relativeTo now: Date) -> [URL] {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: sessionsDir.path) else { return [] }
-
-        let cutoff = now.addingTimeInterval(-seconds)
-        var results: [URL] = []
-
-        // Recursively enumerate through YYYY/MM/DD/ subdirectories
-        guard let enumerator = fm.enumerator(
-            at: sessionsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        for case let fileURL as URL in enumerator {
-            guard fileURL.pathExtension == "jsonl" else { continue }
-
-            // Skip files not modified recently
-            if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-               let modDate = attrs[.modificationDate] as? Date,
-               modDate < cutoff {
-                continue
-            }
-
-            results.append(fileURL)
-        }
-
-        return results
     }
 }

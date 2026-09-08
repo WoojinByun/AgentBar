@@ -153,13 +153,41 @@ struct ServiceDetailRow: View {
 
             if data.showsFiveHourUsage {
                 MetricRow(
-                    label: data.service.fiveHourLabel,
+                    label: data.primaryLabel ?? data.service.fiveHourLabel,
                     metric: data.fiveHourUsage,
-                    showsExactResetTime: data.service.fiveHourLabel == "5h"
+                    showsExactResetTime: (data.primaryLabel ?? data.service.fiveHourLabel) == "5h"
                 )
             }
             if let weekly = data.weeklyUsage {
-                MetricRow(label: data.service.weeklyLabel, metric: weekly)
+                MetricRow(label: data.secondaryLabel ?? data.service.weeklyLabel, metric: weekly)
+            }
+            if let credits = data.resetCredits {
+                Text("Resets available: \(credits.availableCount)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(credits.credits?.filter { $0.status == "available" } ?? []) { credit in
+                    HStack {
+                        Text(credit.title ?? "Full reset")
+                        Spacer()
+                        if let expiresAt = credit.expiresAt {
+                            Text("Expires \(MetricRow.resetTimestampText(for: Date(timeIntervalSince1970: expiresAt)))")
+                        } else {
+                            Text("Expiry unavailable")
+                        }
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                }
+            }
+            if let message = data.statusMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                if data.showsFiveHourUsage || data.weeklyUsage != nil {
+                    Text("Last success: \(MetricRow.resetTimestampText(for: data.lastUpdated))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 4)

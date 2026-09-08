@@ -74,7 +74,7 @@ AgentBarTests/   Unit tests per provider + ViewModel + utilities
 | Service | Data Source | Unit | Notes |
 |---------|-----------|------|-------|
 | Claude Code | Anthropic OAuth API (`/api/oauth/usage`) | percent | Token from macOS Keychain "Claude Code-credentials" |
-| OpenAI Codex | Local JSONL (`~/.codex/sessions/`) | tokens | rate_limits.primary (5h) / secondary (7d) |
+| OpenAI Codex | Codex App Server (`account/rateLimits/read`) | percent | Uses Codex CLI login; labels follow server window durations; includes reset credits |
 | Google Gemini | Local logs (`~/.gemini/tmp/`) | requests | Daily window only, weeklyUsage=nil |
 | GitHub Copilot | GitHub API (`/copilot_internal/user`) | requests | PAT from Keychain, monthly premium requests, weeklyUsage=nil |
 | Cursor | Cursor API (`/api/usage`) + local SQLite | requests | JWT from `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, weeklyUsage=nil |

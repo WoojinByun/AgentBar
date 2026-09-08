@@ -9,6 +9,10 @@ struct UsageData: Identifiable, Sendable {
     let isAvailable: Bool
     let planName: String?
     let showsFiveHourUsage: Bool
+    let primaryLabel: String?
+    let secondaryLabel: String?
+    let resetCredits: UsageResetCredits?
+    let statusMessage: String?
 
     init(
         service: ServiceType,
@@ -17,7 +21,11 @@ struct UsageData: Identifiable, Sendable {
         lastUpdated: Date,
         isAvailable: Bool,
         planName: String? = nil,
-        showsFiveHourUsage: Bool = true
+        showsFiveHourUsage: Bool = true,
+        primaryLabel: String? = nil,
+        secondaryLabel: String? = nil,
+        resetCredits: UsageResetCredits? = nil,
+        statusMessage: String? = nil
     ) {
         self.service = service
         self.fiveHourUsage = fiveHourUsage
@@ -26,7 +34,23 @@ struct UsageData: Identifiable, Sendable {
         self.isAvailable = isAvailable
         self.planName = planName
         self.showsFiveHourUsage = showsFiveHourUsage
+        self.primaryLabel = primaryLabel
+        self.secondaryLabel = secondaryLabel
+        self.resetCredits = resetCredits
+        self.statusMessage = statusMessage
     }
+}
+
+struct UsageResetCredits: Decodable, Sendable {
+    let availableCount: Int
+    let credits: [UsageResetCredit]?
+}
+
+struct UsageResetCredit: Decodable, Identifiable, Sendable {
+    let id: String
+    let status: String
+    let expiresAt: Double?
+    let title: String?
 }
 
 struct UsageMetric: Sendable {

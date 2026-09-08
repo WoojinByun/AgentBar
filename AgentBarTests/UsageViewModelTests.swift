@@ -128,6 +128,26 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertTrue(snapshots.isEmpty)
     }
 
+    func testStaleUsageRemainsVisibleButIsNotRecordedAsNewHistory() async {
+        let historyStore = HistoryRecordingStoreSpy()
+        let stale = UsageData(
+            service: .codex,
+            fiveHourUsage: .zero,
+            weeklyUsage: UsageMetric(used: 100, total: 100, unit: .percent, resetTime: nil),
+            lastUpdated: Date(timeIntervalSince1970: 1_000),
+            isAvailable: false,
+            showsFiveHourUsage: false,
+            statusMessage: "Update failed"
+        )
+        let provider = MockUsageProvider(serviceType: .codex, result: .success(stale))
+        let vm = UsageViewModel(providers: [provider], historyStore: historyStore)
+        await vm.fetchAllUsage()
+        XCTAssertEqual(vm.usageData.first?.weeklyUsage?.used, 100)
+        XCTAssertFalse(vm.usageData.first?.isAvailable ?? true)
+        let snapshots = await historyStore.recordedSnapshots()
+        XCTAssertTrue(snapshots.isEmpty)
+    }
+
     func testLegacyCursorPlanBusinessMigratesToTeams() {
         let suiteName = "AgentBarTests.CursorPlanMigration"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

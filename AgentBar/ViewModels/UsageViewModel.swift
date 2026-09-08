@@ -60,6 +60,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     func fetchAllUsage() async {
+        guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
 
@@ -72,7 +73,7 @@ final class UsageViewModel: ObservableObject {
                     guard await provider.isConfigured() else { return nil }
                     do {
                         let usage = try await provider.fetchUsage()
-                        return ProviderFetchOutcome(data: usage, shouldRecordHistory: true)
+                        return ProviderFetchOutcome(data: usage, shouldRecordHistory: usage.isAvailable)
                     } catch {
                         // Return zero usage so the bar stays visible
                         return ProviderFetchOutcome(
@@ -145,11 +146,7 @@ final class UsageViewModel: ObservableObject {
         }
 
         if isEnabled("codexEnabled", in: defaults) {
-            let codexLimits = codexTokenLimits(in: defaults)
-            providers.append(CodexUsageProvider(
-                fiveHourTokenLimit: codexLimits.fiveHour,
-                weeklyTokenLimit: codexLimits.weekly
-            ))
+            providers.append(CodexUsageProvider())
         }
 
         if isEnabled("geminiEnabled", in: defaults) {
@@ -177,20 +174,6 @@ final class UsageViewModel: ObservableObject {
 
     private static func isEnabled(_ key: String, in defaults: UserDefaults) -> Bool {
         defaults.bool(forKey: key, defaultValue: true)
-    }
-
-    private static func codexTokenLimits(in defaults: UserDefaults) -> (fiveHour: Double, weekly: Double) {
-        let planRaw = defaults.string(forKey: "codexPlan") ?? CodexPlan.pro.rawValue
-        let plan = CodexPlan(rawValue: planRaw) ?? .pro
-
-        if plan == .custom {
-            return (
-                defaults.double(forKey: "codexFiveHourLimit").nonZero ?? CodexPlan.pro.fiveHourTokenLimit,
-                defaults.double(forKey: "codexWeeklyLimit").nonZero ?? CodexPlan.pro.weeklyTokenLimit
-            )
-        }
-
-        return (plan.fiveHourTokenLimit, plan.weeklyTokenLimit)
     }
 
     private static func geminiDailyLimit(in defaults: UserDefaults) -> Double {

@@ -2,6 +2,14 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 96: Fetch live Codex usage and reset credits
+- **Live quota**: Replaced session-log scanning and estimated token totals with the authenticated Codex App Server `account/rateLimits/read` method. Each refresh reads server percentages, window durations, reset times, and the account plan without starting a model turn.
+- **Reset credits**: Shows the available reset count and returned expiration dates. This integration only reads credits; it never consumes them.
+- **Failure handling**: Preserves the last successful observation with a stale warning and timestamp, excludes stale results from usage history, and reports unavailable usage on an initial failure.
+- **Process lifecycle**: Added bounded stdio initialization and response reading, EOF/error handling, process cleanup, and CLI discovery for GUI environments including nvm installations.
+- **Verification**: Transport fixtures cover initialization, fragmented responses, notifications, timeout, and server errors. A read-only probe using the production Swift client returned 50% weekly usage and two reset credits, including with a minimal PATH.
+- All 285 tests passing (1 skipped)
+
 ## Iteration 95: Tune popover width
 - **Popover width**: Reduced the reset-timestamp layout from 416pt to 350pt for a more compact menu bar popover.
 - All 287 tests passing
