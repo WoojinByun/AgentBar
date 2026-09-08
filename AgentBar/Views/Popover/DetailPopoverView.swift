@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DetailPopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
-    static let popoverWidth: CGFloat = 416
+    static let popoverWidth: CGFloat = 350
     private var displayUsageData: [UsageData] {
         Self.sortedForDisplay(viewModel.usageData)
     }

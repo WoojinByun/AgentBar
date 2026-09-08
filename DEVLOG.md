@@ -2,6 +2,10 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 95: Tune popover width
+- **Popover width**: Reduced the reset-timestamp layout from 416pt to 350pt for a more compact menu bar popover.
+- All 287 tests passing
+
 ## Iteration 94: Correct Codex window mapping and simplify the popover
 - **Codex rate-window mapping**: Classifies local Codex `rate_limits` by `window_minutes`; a 10,080-minute primary window now displays as the sole 7-day row instead of an incorrect 5-hour row plus stale cached data.
 - **Popover layout**: Increased the popover width from 320pt to 416pt so reset timestamps remain on one line, and removed the Buy Me a Coffee button and its Settings toggle.

@@ -66,7 +66,7 @@ final class DetailPopoverViewTests: XCTestCase {
     }
 
     func testPopoverWidthAccommodatesResetTimestamps() {
-        XCTAssertEqual(DetailPopoverView.popoverWidth, 416)
+        XCTAssertEqual(DetailPopoverView.popoverWidth, 350)
     }
 
     func testSortedForDisplayOrdersByHighestUsageDescending() {
