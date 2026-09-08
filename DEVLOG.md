@@ -2,6 +2,13 @@
 
 > Iterations 1–69 archived in [DEVLOG-archive.md](DEVLOG-archive.md).
 
+## Iteration 97: Document standalone installation of the personal fork
+- **Fork-specific setup**: Replaced the upstream DMG install instruction with the exact personal branch clone, Xcode prerequisites, ad-hoc Debug build, per-user Applications installation, backup, and update commands.
+- **Account setup and troubleshooting**: Documented Codex CLI installation and ChatGPT login, Claude Keychain access, server quota/reset-credit behavior, stale data, CLI discovery, and old app copies.
+- **Clear attribution**: Added a fork change summary, identified the upstream screenshot and support links, and removed badges that did not describe this local build.
+- **Verification**: Built a fresh clone with the documented signing overrides on Xcode 16.3/macOS 15.7.4, copied the app to a temporary installation directory, verified its ad-hoc signature, and syntax-checked the README shell blocks. No desktop input automation was used.
+- All 285 tests passing (1 skipped)
+
 ## Iteration 96: Fetch live Codex usage and reset credits
 - **Live quota**: Replaced session-log scanning and estimated token totals with the authenticated Codex App Server `account/rateLimits/read` method. Each refresh reads server percentages, window durations, reset times, and the account plan without starting a model turn.
 - **Reset credits**: Shows the available reset count and returned expiration dates. This integration only reads credits; it never consumes them.
