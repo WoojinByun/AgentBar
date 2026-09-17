@@ -257,9 +257,9 @@ struct MetricRow: View {
 
     static func resetTimestampText(for resetTime: Date, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.locale = Locale(identifier: "ko_KR")
         formatter.timeZone = timeZone
-        formatter.dateFormat = "MM/dd HH:mm"
+        formatter.dateFormat = "MM/dd(EEE) HH:mm"
         return formatter.string(from: resetTime)
     }
 

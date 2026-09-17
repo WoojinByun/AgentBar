@@ -142,12 +142,12 @@ final class DetailPopoverViewTests: XCTestCase {
         XCTAssertEqual(DetailPopoverView.resolvedVersionString(from: [:]), "unknown")
     }
 
-    func testResetTimestampTextShowsLocalDateAndTimeWithoutLabel() {
+    func testResetTimestampTextShowsLocalDateTimeAndKoreanWeekday() {
         let resetTime = Date(timeIntervalSince1970: 1_788_873_180)
 
         let text = MetricRow.resetTimestampText(for: resetTime, timeZone: TimeZone(secondsFromGMT: 0)!)
 
-        XCTAssertEqual(text, "09/08 13:13")
+        XCTAssertEqual(text, "09/08(화) 13:13")
     }
 
     func testMetricRowShowsExactResetTimeForFiveHourAndSevenDayWindows() {
