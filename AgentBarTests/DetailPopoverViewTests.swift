@@ -150,6 +150,12 @@ final class DetailPopoverViewTests: XCTestCase {
         XCTAssertEqual(text, "09/08 13:13")
     }
 
+    func testMetricRowShowsExactResetTimeForFiveHourAndSevenDayWindows() {
+        XCTAssertTrue(MetricRow.showsExactResetTime(for: "5h"))
+        XCTAssertTrue(MetricRow.showsExactResetTime(for: "7d"))
+        XCTAssertFalse(MetricRow.showsExactResetTime(for: "1d"))
+    }
+
     private func makeUsageRows(count: Int) -> [UsageData] {
         let services = ServiceType.allCases
         return (0..<count).map { index in

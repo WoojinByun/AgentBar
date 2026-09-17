@@ -155,11 +155,18 @@ struct ServiceDetailRow: View {
                 MetricRow(
                     label: data.primaryLabel ?? data.service.fiveHourLabel,
                     metric: data.fiveHourUsage,
-                    showsExactResetTime: (data.primaryLabel ?? data.service.fiveHourLabel) == "5h"
+                    showsExactResetTime: MetricRow.showsExactResetTime(
+                        for: data.primaryLabel ?? data.service.fiveHourLabel
+                    )
                 )
             }
             if let weekly = data.weeklyUsage {
-                MetricRow(label: data.secondaryLabel ?? data.service.weeklyLabel, metric: weekly)
+                let label = data.secondaryLabel ?? data.service.weeklyLabel
+                MetricRow(
+                    label: label,
+                    metric: weekly,
+                    showsExactResetTime: MetricRow.showsExactResetTime(for: label)
+                )
             }
             if let credits = data.resetCredits {
                 Text("Resets available: \(credits.availableCount)")
@@ -254,6 +261,10 @@ struct MetricRow: View {
         formatter.timeZone = timeZone
         formatter.dateFormat = "MM/dd HH:mm"
         return formatter.string(from: resetTime)
+    }
+
+    static func showsExactResetTime(for label: String) -> Bool {
+        label == "5h" || label == "7d"
     }
 
     private func formatDuration(_ interval: TimeInterval) -> String {
