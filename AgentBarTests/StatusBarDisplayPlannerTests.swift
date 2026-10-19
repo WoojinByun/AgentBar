@@ -4,7 +4,7 @@ import SwiftUI
 
 final class ServiceTypeColorTests: XCTestCase {
     func testCodexDarkColorIsGray400() {
-        let color = ServiceType.codex.darkColor
+        let color = ServiceType.codex.defaultDarkColor
         // gray-400: (0.60, 0.63, 0.67)
         let resolved = NSColor(color).usingColorSpace(.sRGB)!
         XCTAssertEqual(resolved.redComponent, 0.60, accuracy: 0.01)
@@ -13,7 +13,7 @@ final class ServiceTypeColorTests: XCTestCase {
     }
 
     func testAllServicesHaveDistinctDarkColors() {
-        let colors = ServiceType.allCases.map { NSColor($0.darkColor).usingColorSpace(.sRGB)! }
+        let colors = ServiceType.allCases.map { NSColor($0.defaultDarkColor).usingColorSpace(.sRGB)! }
         for i in 0..<colors.count {
             for j in (i + 1)..<colors.count {
                 let same = abs(colors[i].redComponent - colors[j].redComponent) < 0.05
@@ -22,6 +22,33 @@ final class ServiceTypeColorTests: XCTestCase {
                 XCTAssertFalse(same, "\(ServiceType.allCases[i]) and \(ServiceType.allCases[j]) have nearly identical darkColor")
             }
         }
+    }
+
+    func testCustomColorOverridesDefaultAndResetClearsIt() {
+        let suiteName = "AgentBarTests.ServiceColor.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertNil(ServiceColorSettings.customColor(for: .claude, defaults: defaults))
+
+        ServiceColorSettings.setCustomColor(Color(red: 1, green: 0, blue: 0), for: .claude, defaults: defaults)
+        XCTAssertEqual(ServiceColorSettings.customHex(for: .claude, defaults: defaults), "#FF0000")
+        let light = NSColor(ServiceColorSettings.customLightColor(for: .claude, defaults: defaults)!)
+            .usingColorSpace(.sRGB)!
+        XCTAssertEqual(light.redComponent, 1, accuracy: 0.01)
+        XCTAssertEqual(light.greenComponent, 0.55, accuracy: 0.01)
+
+        ServiceColorSettings.setCustomColor(nil, for: .claude, defaults: defaults)
+        XCTAssertNil(ServiceColorSettings.customHex(for: .claude, defaults: defaults))
+    }
+
+    func testRejectsMalformedStoredHex() {
+        let suiteName = "AgentBarTests.ServiceColor.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set("not-a-color", forKey: ServiceColorSettings.defaultsKey(for: .codex))
+        XCTAssertNil(ServiceColorSettings.customColor(for: .codex, defaults: defaults))
     }
 }
 

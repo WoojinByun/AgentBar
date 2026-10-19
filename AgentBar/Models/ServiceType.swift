@@ -9,7 +9,17 @@ enum ServiceType: String, CaseIterable, Codable, Sendable {
     case opencode = "OpenCode"
     case zai     = "Z.ai Coding Plan"
 
+    /// User-chosen color when set in Settings, otherwise the built-in default.
     var darkColor: Color {
+        ServiceColorSettings.customColor(for: self) ?? defaultDarkColor
+    }
+
+    /// Lighter shade of a custom color, otherwise the built-in default.
+    var lightColor: Color {
+        ServiceColorSettings.customLightColor(for: self) ?? defaultLightColor
+    }
+
+    var defaultDarkColor: Color {
         switch self {
         case .claude:  Color(red: 0.851, green: 0.467, blue: 0.024) // amber-600
         case .codex:   Color(red: 0.60, green: 0.63, blue: 0.67)     // gray-400
@@ -21,7 +31,7 @@ enum ServiceType: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    var lightColor: Color {
+    var defaultLightColor: Color {
         switch self {
         case .claude:  Color(red: 0.988, green: 0.827, blue: 0.302) // amber-300
         case .codex:   Color(red: 0.82, green: 0.84, blue: 0.86)     // gray-200
@@ -76,4 +86,71 @@ enum ServiceType: String, CaseIterable, Codable, Sendable {
         case .zai:     "zai"
         }
     }
+}
+
+
+/// Per-agent color overrides stored in UserDefaults as `#RRGGBB` strings.
+enum ServiceColorSettings {
+    /// Lightness mix toward white used to derive the weekly (light) shade.
+    private static let lightMix: Double = 0.55
+
+    static func defaultsKey(for service: ServiceType) -> String {
+        "serviceColor.\(service.keychainAccount)"
+    }
+
+    static func customHex(for service: ServiceType, defaults: UserDefaults = .standard) -> String? {
+        defaults.string(forKey: defaultsKey(for: service)).flatMap { rgb(fromHex: $0) == nil ? nil : $0 }
+    }
+
+    static func customColor(for service: ServiceType, defaults: UserDefaults = .standard) -> Color? {
+        customHex(for: service, defaults: defaults)
+            .flatMap(rgb(fromHex:))
+            .map { Color(red: $0.r, green: $0.g, blue: $0.b) }
+    }
+
+    static func customLightColor(for service: ServiceType, defaults: UserDefaults = .standard) -> Color? {
+        customHex(for: service, defaults: defaults)
+            .flatMap(rgb(fromHex:))
+            .map {
+                Color(
+                    red: $0.r + (1 - $0.r) * lightMix,
+                    green: $0.g + (1 - $0.g) * lightMix,
+                    blue: $0.b + (1 - $0.b) * lightMix
+                )
+            }
+    }
+
+    /// Stores `color`, or clears the override when `nil`.
+    static func setCustomColor(_ color: Color?, for service: ServiceType, defaults: UserDefaults = .standard) {
+        if let color, let hex = hex(from: color) {
+            defaults.set(hex, forKey: defaultsKey(for: service))
+        } else {
+            defaults.removeObject(forKey: defaultsKey(for: service))
+        }
+        NotificationCenter.default.post(name: .serviceColorsChanged, object: nil)
+    }
+
+    static func hex(from color: Color) -> String? {
+        guard let srgb = NSColor(color).usingColorSpace(.sRGB) else { return nil }
+        let channel = { (value: CGFloat) in Int((min(max(value, 0), 1) * 255).rounded()) }
+        return String(
+            format: "#%02X%02X%02X",
+            channel(srgb.redComponent), channel(srgb.greenComponent), channel(srgb.blueComponent)
+        )
+    }
+
+    static func rgb(fromHex hex: String) -> (r: Double, g: Double, b: Double)? {
+        let trimmed = hex.trimmingCharacters(in: .whitespaces)
+        let digits = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        return (
+            Double((value >> 16) & 0xFF) / 255,
+            Double((value >> 8) & 0xFF) / 255,
+            Double(value & 0xFF) / 255
+        )
+    }
+}
+
+extension Notification.Name {
+    static let serviceColorsChanged = Notification.Name("AgentBarServiceColorsChanged")
 }

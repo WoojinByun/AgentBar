@@ -48,6 +48,17 @@ final class StatusBarController {
                     )
                 }
                 .store(in: &cancellables)
+
+            NotificationCenter.default.publisher(for: .serviceColorsChanged)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    self.hostingView?.rootView = StackedBarView(
+                        services: self.viewModel.usageData,
+                        hasError: self.viewModel.lastError != nil
+                    )
+                }
+                .store(in: &cancellables)
         }
 
         // Click action — toggle popover

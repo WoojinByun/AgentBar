@@ -40,6 +40,7 @@ struct SettingsView: View {
     @AppStorage("zaiEnabled") private var zaiEnabled = true
 
     @State private var selectedTab: SettingsTab = .usage
+    @State private var colorRevision = 0
     #if AGENTBAR_NOTIFICATION_SOUNDS
     @State private var showingSoundPackHelp = false
     @StateObject private var soundPackVM = SoundPackViewModel()
@@ -126,6 +127,8 @@ struct SettingsView: View {
                     Text("300s").tag(300.0)
                 }
             }
+
+            agentColorsSection
 
             Section("Claude Code") {
                 Toggle("Enabled", isOn: $claudeEnabled)
@@ -276,6 +279,39 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Agent Colors
+
+    private var agentColorsSection: some View {
+        Section("Agent Colors") {
+            // Read the revision so Reset buttons refresh after a change.
+            let _ = colorRevision
+            ForEach(ServiceType.allCases, id: \.self) { service in
+                HStack {
+                    ColorPicker(service.rawValue, selection: colorBinding(for: service), supportsOpacity: false)
+                    Button("Reset") {
+                        ServiceColorSettings.setCustomColor(nil, for: service)
+                        colorRevision += 1
+                    }
+                    .disabled(ServiceColorSettings.customHex(for: service) == nil)
+                }
+            }
+
+            Text("Used for the menu bar and popover bars. The weekly bar uses a lighter shade.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func colorBinding(for service: ServiceType) -> Binding<Color> {
+        Binding(
+            get: { service.darkColor },
+            set: { newColor in
+                ServiceColorSettings.setCustomColor(newColor, for: service)
+                colorRevision += 1
+            }
+        )
     }
 
     // MARK: - Notifications Tab
