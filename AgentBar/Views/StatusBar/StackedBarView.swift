@@ -113,6 +113,7 @@ struct StackedBarView: View {
 
 struct SingleBarView: View {
     let usage: UsageData
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         HStack(spacing: 2) {
@@ -141,6 +142,11 @@ struct SingleBarView: View {
                             .frame(width: max(2, geo.size.width * usage.fiveHourUsage.percentage))
                     }
                 }
+                // 1px outline so the filled share of the full bar is readable.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .strokeBorder(Color.white, lineWidth: 1 / max(displayScale, 1))
+                )
             }
         }
         .frame(height: StatusBarDisplayPlanner.rowHeight)

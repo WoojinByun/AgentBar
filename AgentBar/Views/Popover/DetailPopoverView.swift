@@ -303,6 +303,7 @@ struct MetricRow: View {
 
 struct MiniBarView: View {
     let data: UsageData
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geo in
@@ -318,6 +319,10 @@ struct MiniBarView: View {
                     .fill(data.service.darkColor)
                     .frame(width: geo.size.width * data.fiveHourUsage.percentage)
             }
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(Color.white, lineWidth: 1 / max(displayScale, 1))
+            )
         }
     }
 }
