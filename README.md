@@ -16,6 +16,10 @@
 - 조회에 실패하면 마지막으로 확인한 Codex 사용량이 오래된 값임을 명확히 표시합니다.
 - `5h` 행에는 남은 시간 옆에 초기화 시각을 현지 시간대 기준 `MM/dd HH:mm` 형식으로 표시합니다.
 - 상세 팝업 너비를 350pt로 조정하고, 앱 안의 Buy Me a Coffee 버튼을 제거했습니다.
+- 상세 팝업은 바깥을 클릭하거나 다른 앱으로 포커스가 옮겨 가면 닫힙니다.
+- 설정의 `Agent Colors`에서 서비스별 색을 직접 지정할 수 있습니다. `Reset`을 누르면 기본 색으로 돌아갑니다.
+- Claude 계정을 여러 개 등록해 계정별로 따로 표시합니다(아래 [Claude 계정 여러 개 사용](#claude-multi-account) 참고).
+- 사용량 막대에 흰색 1px 테두리를 그려 전체 대비 사용 비율이 바로 보입니다.
 
 <p align="center">
   <img src="docs/assets/screenshot.png" alt="Claude 초기화 시각과 Codex 실제 사용량·초기화권을 표시하는 AgentBar 화면" />
@@ -45,6 +49,24 @@
 - 요금제·한도 설정 및 API 키 관리
 - CESP 레지스트리를 통한 사운드 팩 지원
 - 알림 전달 후 사용자 지정 알림음 재생, 재생 실패 시 기본 알림음 사용
+
+<a id="claude-multi-account"></a>
+
+## Claude 계정 여러 개 사용
+
+Claude Code는 `CLAUDE_CONFIG_DIR`마다 로그인 정보를 따로 보관합니다. 기본 로그인은 키체인 항목 `Claude Code-credentials`에, 다른 설정 디렉터리의 로그인은 `Claude Code-credentials-<디렉터리 경로 SHA-256 앞 8자리>`에 저장됩니다. AgentBar는 등록한 계정마다 이 항목을 읽어 별도 행으로 표시합니다.
+
+1. 터미널에서 새 설정 디렉터리로 Claude Code를 실행하고 두 번째 계정으로 로그인합니다.
+
+   ```sh
+   CLAUDE_CONFIG_DIR=~/.claude-2 claude
+   # Claude Code 안에서 /login 으로 두 번째 계정에 로그인한 뒤 종료
+   ```
+
+2. AgentBar 설정의 Usage 탭 `Claude Code` 영역에서 `Add account`를 누르고, 디렉터리에 `~/.claude-2`를 입력합니다. `Label`에는 계정 별칭을 적습니다. 비워 두면 로그인한 이메일을 표시합니다.
+3. 팝업에는 계정별 행이, 메뉴 막대에는 `CC`, `CC2` 막대가 나타납니다. 로그인 전이면 행에 `Not signed in` 안내가 표시됩니다.
+
+디렉터리를 비워 둔 계정은 기존 기본 로그인(`~/.claude`)입니다. 사용 기록(History) 탭에는 첫 번째 계정만 기록합니다.
 
 <a id="install"></a>
 

@@ -2,6 +2,14 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 100: 팝업 바깥 클릭 닫기, 서비스별 색 지정, Claude 다중 계정, 막대 테두리
+
+- **팝업 닫기**: 메뉴 막대 앱(accessory)은 아이콘을 눌러도 활성화되지 않아 `.transient` 팝업이 바깥 클릭을 감지하지 못했습니다. `PopoverController`가 팝업을 열 때 앱을 활성화하고, 다른 앱 클릭을 받는 전역 마우스 모니터와 `NSApplication.didResignActiveNotification` 관찰자로 팝업을 닫습니다. 교체된 팝업의 닫힘 알림은 무시합니다.
+- **서비스별 색**: `ServiceColorSettings`가 `serviceColor.<keychainAccount>` 키에 `#RRGGBB`를 저장합니다. `ServiceType.darkColor`/`lightColor`는 지정한 색을 우선하고, 7d 막대 색은 지정한 색을 흰색과 55% 섞어 만듭니다. 기본 색은 `defaultDarkColor`/`defaultLightColor`로 유지합니다. 설정 Usage 탭에 `Agent Colors` 영역(ColorPicker, Reset)을 추가했고, 변경 시 `.serviceColorsChanged` 알림으로 메뉴 막대를 다시 그립니다.
+- **Claude 다중 계정**: `ClaudeAccount`(id, label, configDir)와 `ClaudeAccountStore`(`claudeAccounts` 키)를 추가했습니다. 계정마다 `ClaudeUsageProvider`를 만들고, 토큰은 Claude Code 2.1.303 바이너리에서 확인한 규칙대로 `Claude Code-credentials-<sha256(configDir)[:8]>` 키체인 항목에서 읽습니다. 없으면 `<configDir>/.credentials.json`을 읽습니다. 토큰 캐시는 서비스 이름 목록별로, 사용량 캐시는 계정 ID별로 분리했습니다(기본 로그인은 기존 키 유지). `UsageData`에 `accountLabel`/`accountIndex`를, `UsageProviderProtocol`에 기본값이 nil인 같은 속성을 추가해 다른 서비스도 같은 구조로 확장할 수 있게 했습니다. 메뉴 막대 표시는 `CC`, `CC2` 순서이며, 사용 기록에는 첫 번째 계정만 저장합니다.
+- **막대 테두리**: 메뉴 막대 `SingleBarView`와 팝업 `MiniBarView`에 화면 배율 기준 1px 흰색 테두리를 추가했습니다.
+- 테스트 299개 중 298개 통과, 1개 건너뜀
+
 ## 개발 기록 99: 전체 Markdown 한국어화 및 최신 스크린샷 반영
 
 - **문서 한국어화**: README, 개발 지침, 개발 기록과 보관 기록, 알림 로드맵, 사용량 기록 설계, 빌드 명령 안내를 한국어로 옮겼습니다. 과거 기록의 번호와 사실, 코드 예제, 실행 명령, 링크는 유지했습니다.
