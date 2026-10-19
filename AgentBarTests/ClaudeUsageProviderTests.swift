@@ -2,7 +2,7 @@ import XCTest
 @testable import AgentBar
 
 final class ClaudeUsageProviderTests: XCTestCase {
-    private var originalSecurityCLIRunner: (@Sendable (TimeInterval) -> String?)!
+    private var originalSecurityCLIRunner: (@Sendable (String, TimeInterval) -> String?)!
 
     override func setUp() {
         super.setUp()
@@ -393,7 +393,7 @@ final class ClaudeUsageProviderTests: XCTestCase {
         {"claudeAiOauth":{"accessToken":"cached-token"}}
         """
         let counter = CLICounterBox()
-        ClaudeUsageProvider.securityCLIRunner = { _ in
+        ClaudeUsageProvider.securityCLIRunner = { _, _ in
             counter.increment()
             return credJSON
         }
@@ -410,7 +410,7 @@ final class ClaudeUsageProviderTests: XCTestCase {
 
     func testReadKeychainTokenViaCLICachesNilOnFailure() {
         let counter = CLICounterBox()
-        ClaudeUsageProvider.securityCLIRunner = { _ in
+        ClaudeUsageProvider.securityCLIRunner = { _, _ in
             counter.increment()
             return nil
         }
@@ -419,6 +419,113 @@ final class ClaudeUsageProviderTests: XCTestCase {
         XCTAssertNil(ClaudeUsageProvider.readKeychainTokenViaCLI(now: now, cacheTTL: 60))
         XCTAssertNil(ClaudeUsageProvider.readKeychainTokenViaCLI(now: now.addingTimeInterval(5), cacheTTL: 60))
         XCTAssertEqual(counter.value, 1)
+    }
+
+    // MARK: - Multiple accounts
+
+    func testDefaultLoginUsesUnsuffixedKeychainService() {
+        XCTAssertEqual(ClaudeAccount.defaultLogin.keychainServiceCandidates, ["Claude Code-credentials"])
+        XCTAssertNil(ClaudeAccount.defaultLogin.resolvedConfigDir)
+    }
+
+    func testCustomConfigDirUsesHashedKeychainService() {
+        let account = ClaudeAccount(configDir: "/Users/test/.claude-2/")
+        XCTAssertEqual(account.resolvedConfigDir, "/Users/test/.claude-2")
+        XCTAssertEqual(account.keychainServiceCandidates, [
+            "Claude Code-credentials-2601a85c",
+            "Claude Code-credentials-56a1affc",
+        ])
+    }
+
+    func testTildeConfigDirExpandsToHome() {
+        let account = ClaudeAccount(configDir: "~/.claude-2")
+        let expected = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-2").standardizedFileURL.path
+        XCTAssertEqual(account.resolvedConfigDir, expected)
+    }
+
+    func testReadKeychainTokenTriesServicesInOrder() {
+        let calls = ServiceCallLog()
+        ClaudeUsageProvider.securityCLIRunner = { service, _ in
+            calls.append(service)
+            return service == "second" ? #"{"claudeAiOauth":{"accessToken":"second-token"}}"# : nil
+        }
+
+        let token = ClaudeUsageProvider.readKeychainTokenViaCLI(
+            services: ["first", "second", "third"],
+            now: Date(timeIntervalSince1970: 3_000),
+            cacheTTL: 60
+        )
+
+        XCTAssertEqual(token, "second-token")
+        XCTAssertEqual(calls.values, ["first", "second"])
+    }
+
+    func testTokenCacheIsSeparatePerAccount() {
+        ClaudeUsageProvider.securityCLIRunner = { service, _ in
+            #"{"claudeAiOauth":{"accessToken":"token-\#(service)"}}"#
+        }
+        let now = Date(timeIntervalSince1970: 4_000)
+
+        XCTAssertEqual(ClaudeUsageProvider.readKeychainTokenViaCLI(services: ["a"], now: now, cacheTTL: 60), "token-a")
+        XCTAssertEqual(ClaudeUsageProvider.readKeychainTokenViaCLI(services: ["b"], now: now, cacheTTL: 60), "token-b")
+    }
+
+    func testUnsignedCustomAccountShowsLoginHint() async throws {
+        let defaults = makeDefaultsSuite()
+        let account = ClaudeAccount(label: "Work", configDir: "/Users/test/.claude-2")
+        let provider = ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { nil },
+            defaults: defaults,
+            account: account,
+            accountIndex: 1
+        )
+
+        let isConfigured = await provider.isConfigured()
+        XCTAssertTrue(isConfigured)
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(usage.accountLabel, "Work")
+        XCTAssertEqual(usage.accountIndex, 1)
+        XCTAssertEqual(usage.shortName, "CC2")
+        XCTAssertFalse(usage.showsFiveHourUsage)
+        XCTAssertNil(usage.weeklyUsage)
+        XCTAssertEqual(usage.statusMessage, "Not signed in. Run: CLAUDE_CONFIG_DIR=/Users/test/.claude-2 claude")
+    }
+
+    func testAccountsKeepSeparateUsageCaches() async throws {
+        let defaults = makeDefaultsSuite()
+        let json = """
+        {"five_hour": {"utilization": 40.0, "resets_at": "2099-01-01T00:00:00+00:00"}}
+        """
+        MockURLProtocol.stubResponse(data: Data(json.utf8), statusCode: 200)
+        let second = ClaudeAccount(configDir: "/Users/test/.claude-2")
+        let secondProvider = ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { "token" },
+            defaults: defaults,
+            account: second,
+            accountIndex: 1
+        )
+        _ = try await secondProvider.fetchUsage()
+
+        XCTAssertNil(defaults.object(forKey: "claudeUsageCache.fiveHour.used"))
+        XCTAssertEqual(defaults.double(forKey: "claudeUsageCache.\(second.id.uuidString).fiveHour.used"), 40)
+    }
+
+    func testAccountStoreDefaultsToDefaultLoginAndRoundTrips() {
+        let defaults = makeDefaultsSuite()
+        XCTAssertEqual(ClaudeAccountStore.load(defaults: defaults), [.defaultLogin])
+
+        let accounts = [ClaudeAccount.defaultLogin, ClaudeAccount(label: "Side", configDir: "~/.claude-2")]
+        ClaudeAccountStore.save(accounts, defaults: defaults)
+        XCTAssertEqual(ClaudeAccountStore.load(defaults: defaults), accounts)
+    }
+
+    func testSingleUnlabeledAccountHasNoAccountLabel() {
+        let provider = ClaudeUsageProvider(credentialProvider: { "token" })
+        XCTAssertNil(provider.accountLabel)
+        XCTAssertNil(provider.accountIndex)
     }
 
     func testExecuteSecurityCLICommandTimeoutForceKillsIfStillRunning() {
@@ -610,5 +717,22 @@ private final class CLICounterBox: @unchecked Sendable {
         lock.lock()
         storedValue += 1
         lock.unlock()
+    }
+}
+
+private final class ServiceCallLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

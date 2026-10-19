@@ -13,6 +13,10 @@ struct UsageData: Identifiable, Sendable {
     let secondaryLabel: String?
     let resetCredits: UsageResetCredits?
     let statusMessage: String?
+    /// Account name shown when a service has several accounts (e.g. two Claude logins).
+    let accountLabel: String?
+    /// Position among the service's accounts; nil when the service has one account.
+    let accountIndex: Int?
 
     init(
         service: ServiceType,
@@ -25,7 +29,9 @@ struct UsageData: Identifiable, Sendable {
         primaryLabel: String? = nil,
         secondaryLabel: String? = nil,
         resetCredits: UsageResetCredits? = nil,
-        statusMessage: String? = nil
+        statusMessage: String? = nil,
+        accountLabel: String? = nil,
+        accountIndex: Int? = nil
     ) {
         self.service = service
         self.fiveHourUsage = fiveHourUsage
@@ -38,7 +44,18 @@ struct UsageData: Identifiable, Sendable {
         self.secondaryLabel = secondaryLabel
         self.resetCredits = resetCredits
         self.statusMessage = statusMessage
+        self.accountLabel = accountLabel
+        self.accountIndex = accountIndex
     }
+
+    /// Menu bar tag, numbered from the second account on (CC, CC2, ...).
+    var shortName: String {
+        guard let accountIndex, accountIndex > 0 else { return service.shortName }
+        return "\(service.shortName)\(accountIndex + 1)"
+    }
+
+    /// Orders rows of the same service by account position.
+    var accountSortIndex: Int { accountIndex ?? 0 }
 }
 
 struct UsageResetCredits: Decodable, Sendable {

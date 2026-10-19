@@ -3,8 +3,16 @@ import Darwin
 
 protocol UsageProviderProtocol: Sendable {
     var serviceType: ServiceType { get }
+    /// Account identity for services with several accounts; nil for single-account providers.
+    var accountLabel: String? { get }
+    var accountIndex: Int? { get }
     func isConfigured() async -> Bool
     func fetchUsage() async throws -> UsageData
+}
+
+extension UsageProviderProtocol {
+    var accountLabel: String? { nil }
+    var accountIndex: Int? { nil }
 }
 
 struct CLIProcessRuntime {

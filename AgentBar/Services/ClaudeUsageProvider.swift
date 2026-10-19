@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - API Response Models
@@ -62,10 +63,111 @@ struct ClaudeUsageWindow: Decodable, Sendable {
     let resets_at: String?
 }
 
+// MARK: - Accounts
+
+/// One Claude Code login. An empty `configDir` is the default `~/.claude` login;
+/// any other value is the `CLAUDE_CONFIG_DIR` that login was created with.
+struct ClaudeAccount: Codable, Identifiable, Equatable, Sendable {
+    var id: UUID
+    var label: String
+    var configDir: String
+
+    /// Fixed ID so the default login keeps its pre-multi-account usage cache keys.
+    static let defaultLoginID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+    static let defaultLogin = ClaudeAccount(id: defaultLoginID, label: "", configDir: "")
+
+    init(id: UUID = UUID(), label: String = "", configDir: String = "") {
+        self.id = id
+        self.label = label
+        self.configDir = configDir
+    }
+
+    /// Absolute config dir with `~` expanded, or nil for the default login.
+    var resolvedConfigDir: String? {
+        let trimmed = configDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath).standardizedFileURL.path
+    }
+
+    /// Claude Code names the Keychain item `Claude Code-credentials-<sha256(dir)[:8]>`
+    /// when `CLAUDE_CONFIG_DIR` is set. Both slash spellings are tried because
+    /// the CLI hashes the directory string it was given.
+    var keychainServiceCandidates: [String] {
+        let base = "Claude Code-credentials"
+        guard let dir = resolvedConfigDir else { return [base] }
+        let spellings = [dir, dir + "/"]
+        return spellings.map { "\(base)-\(Self.shortSHA256($0.precomposedStringWithCanonicalMapping))" }
+    }
+
+    /// Plain-file credentials Claude Code writes when Keychain is unavailable.
+    var credentialsFileURL: URL? {
+        resolvedConfigDir.map { URL(fileURLWithPath: $0).appendingPathComponent(".credentials.json") }
+    }
+
+    /// Account metadata file (`oauthAccount.emailAddress`) for this login.
+    var accountMetadataURL: URL {
+        if let dir = resolvedConfigDir {
+            return URL(fileURLWithPath: dir).appendingPathComponent(".claude.json")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+    }
+
+    /// Signed-in email from the account metadata file, if any.
+    func signedInEmail() -> String? {
+        guard let data = try? Data(contentsOf: accountMetadataURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = object["oauthAccount"] as? [String: Any],
+              let email = oauth["emailAddress"] as? String,
+              !email.isEmpty else {
+            return nil
+        }
+        return email
+    }
+
+    /// Row label: explicit label, then signed-in email, then the directory name.
+    func displayLabel() -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        if let email = signedInEmail() { return email }
+        if let dir = resolvedConfigDir { return (dir as NSString).lastPathComponent }
+        return "default"
+    }
+
+    private static func shortSHA256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .prefix(8)
+            .description
+    }
+}
+
+/// Persists the Claude account list; an empty or missing list means the default login only.
+enum ClaudeAccountStore {
+    static let defaultsKey = "claudeAccounts"
+
+    static func load(defaults: UserDefaults = .standard) -> [ClaudeAccount] {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let accounts = try? JSONDecoder().decode([ClaudeAccount].self, from: data),
+              !accounts.isEmpty else {
+            return [.defaultLogin]
+        }
+        return accounts
+    }
+
+    static func save(_ accounts: [ClaudeAccount], defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(accounts) else { return }
+        defaults.set(data, forKey: defaultsKey)
+    }
+}
+
 // MARK: - Provider
 
 final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     let serviceType: ServiceType = .claude
+    let account: ClaudeAccount
+    /// Position among several configured accounts; nil when only one is configured.
+    let accountIndex: Int?
 
     private let session: URLSession
     private let credentialProvider: @Sendable () -> String?
@@ -73,33 +175,47 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
     static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    private static let keychainService = "Claude Code-credentials"
     private static let tokenCacheLock = NSLock()
     private static let defaultCacheTTL: TimeInterval = 60
     private static let securityCLITimeout: TimeInterval = 2
-    nonisolated(unsafe) private static var cachedToken: String?
-    nonisolated(unsafe) private static var tokenLastLookupAt: Date?
+    nonisolated(unsafe) private static var tokenCache: [String: (token: String?, lookedUpAt: Date)] = [:]
     typealias SecurityCLIProcessRuntime = CLIProcessRuntime
-    nonisolated(unsafe) static var securityCLIRunner: @Sendable (_ timeout: TimeInterval) -> String? = { timeout in
-        runSecurityCLICommand(timeout: timeout)
+    nonisolated(unsafe) static var securityCLIRunner: @Sendable (_ service: String, _ timeout: TimeInterval) -> String? = {
+        service, timeout in
+        runSecurityCLICommand(service: service, timeout: timeout)
     }
 
     init(
         session: URLSession = .shared,
         credentialProvider: (@Sendable () -> String?)? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        account: ClaudeAccount = .defaultLogin,
+        accountIndex: Int? = nil
     ) {
         self.session = session
-        self.credentialProvider = credentialProvider ?? { Self.readKeychainTokenViaCLI() }
+        self.credentialProvider = credentialProvider ?? { Self.readToken(for: account) }
         self.defaults = defaults
+        self.account = account
+        self.accountIndex = accountIndex
     }
 
+    /// Shown only when several accounts are configured or the user named this one.
+    var accountLabel: String? {
+        let hasExplicitLabel = !account.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard accountIndex != nil || hasExplicitLabel else { return nil }
+        return account.displayLabel()
+    }
+
+    /// Added accounts stay visible even before login so a missing login is explained.
     func isConfigured() async -> Bool {
-        credentialProvider() != nil
+        account.resolvedConfigDir != nil || credentialProvider() != nil
     }
 
     func fetchUsage() async throws -> UsageData {
         guard let token = credentialProvider() else {
+            if let dir = account.resolvedConfigDir {
+                return (try? cachedOrThrow(APIError.unauthorized)) ?? notSignedInUsage(configDir: dir)
+            }
             return try cachedOrThrow(APIError.unauthorized)
         }
 
@@ -129,11 +245,11 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
         let fiveHour = resolveMetric(
             window: usageResponse.mergedWindow(for: "five_hour"),
-            cacheKey: "claudeUsageCache.fiveHour"
+            cacheKey: cacheKey("fiveHour")
         )
         let sevenDay = resolveMetric(
             window: usageResponse.mergedWindow(for: "seven_day"),
-            cacheKey: "claudeUsageCache.sevenDay"
+            cacheKey: cacheKey("sevenDay")
         )
 
         let planName = (defaults.string(forKey: "claudePlan")
@@ -145,7 +261,9 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             weeklyUsage: sevenDay,
             lastUpdated: Date(),
             isAvailable: true,
-            planName: planName
+            planName: planName,
+            accountLabel: accountLabel,
+            accountIndex: accountIndex
         )
     }
 
@@ -154,8 +272,8 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     /// but the 7d reset window hasn't passed yet.
     private func cachedOrThrow(_ error: Error) throws -> UsageData {
         let now = Date()
-        let fiveHour = validCachedMetric(forKey: "claudeUsageCache.fiveHour", now: now)
-        let sevenDay = validCachedMetric(forKey: "claudeUsageCache.sevenDay", now: now)
+        let fiveHour = validCachedMetric(forKey: cacheKey("fiveHour"), now: now)
+        let sevenDay = validCachedMetric(forKey: cacheKey("sevenDay"), now: now)
 
         guard fiveHour != nil || sevenDay != nil else { throw error }
 
@@ -169,7 +287,32 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             weeklyUsage: sevenDay ?? zeroPercent,
             lastUpdated: Date(),
             isAvailable: true,
-            planName: planName
+            planName: planName,
+            accountLabel: accountLabel,
+            accountIndex: accountIndex
+        )
+    }
+
+    /// The default login keeps the original keys so existing caches survive.
+    private func cacheKey(_ window: String) -> String {
+        account.id == ClaudeAccount.defaultLoginID
+            ? "claudeUsageCache.\(window)"
+            : "claudeUsageCache.\(account.id.uuidString).\(window)"
+    }
+
+    private func notSignedInUsage(configDir: String) -> UsageData {
+        let zeroPercent = UsageMetric(used: 0, total: 100, unit: .percent, resetTime: nil)
+        let shortDir = (configDir as NSString).abbreviatingWithTildeInPath
+        return UsageData(
+            service: .claude,
+            fiveHourUsage: zeroPercent,
+            weeklyUsage: nil,
+            lastUpdated: Date(),
+            isAvailable: true,
+            showsFiveHourUsage: false,
+            statusMessage: "Not signed in. Run: CLAUDE_CONFIG_DIR=\(shortDir) claude",
+            accountLabel: accountLabel,
+            accountIndex: accountIndex
         )
     }
 
@@ -260,30 +403,52 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
     // MARK: - Keychain Access via security CLI
 
+    /// Reads the OAuth token for `account` from Keychain, falling back to the
+    /// plain `.credentials.json` file in a custom config dir.
+    static func readToken(for account: ClaudeAccount, now: Date = Date()) -> String? {
+        if let token = readKeychainTokenViaCLI(services: account.keychainServiceCandidates, now: now) {
+            return token
+        }
+        guard let fileURL = account.credentialsFileURL,
+              let raw = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            return nil
+        }
+        return parseAccessToken(from: raw)
+    }
+
     /// Reads the Claude Code OAuth token using the `security` CLI to avoid
-    /// per-app Keychain ACL prompts. The result is cached with a TTL matching
-    /// the app's refresh interval.
-    static func readKeychainTokenViaCLI(now: Date = Date(), cacheTTL: TimeInterval? = nil) -> String? {
+    /// per-app Keychain ACL prompts. The first service that yields a token wins.
+    /// The result is cached per service list with a TTL matching the refresh interval.
+    static func readKeychainTokenViaCLI(
+        services: [String] = ClaudeAccount.defaultLogin.keychainServiceCandidates,
+        now: Date = Date(),
+        cacheTTL: TimeInterval? = nil
+    ) -> String? {
         let effectiveTTL = max(0, cacheTTL ?? cacheTTLFromRefreshInterval())
+        let cacheKey = services.joined(separator: "\n")
         tokenCacheLock.lock()
         defer { tokenCacheLock.unlock() }
 
-        if let lastLookup = tokenLastLookupAt,
-           now.timeIntervalSince(lastLookup) < effectiveTTL {
-            return cachedToken
+        if let entry = tokenCache[cacheKey],
+           now.timeIntervalSince(entry.lookedUpAt) < effectiveTTL {
+            return entry.token
         }
 
-        let rawJSON = securityCLIRunner(securityCLITimeout)
-        let token = rawJSON.flatMap { parseAccessToken(from: $0) }
-        cachedToken = token
-        tokenLastLookupAt = now
+        var token: String?
+        for service in services {
+            if let raw = securityCLIRunner(service, securityCLITimeout),
+               let parsed = parseAccessToken(from: raw) {
+                token = parsed
+                break
+            }
+        }
+        tokenCache[cacheKey] = (token, now)
         return token
     }
 
     static func resetTokenCache() {
         tokenCacheLock.lock()
-        cachedToken = nil
-        tokenLastLookupAt = nil
+        tokenCache.removeAll()
         tokenCacheLock.unlock()
     }
 
@@ -301,13 +466,13 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         return refreshInterval > 0 ? refreshInterval : defaultCacheTTL
     }
 
-    /// Runs `security find-generic-password -s "Claude Code-credentials" -w`
+    /// Runs `security find-generic-password -s <service> -w`
     /// which outputs the password data to stdout. The `security` binary is a
     /// system-trusted application so it bypasses per-app ACL prompts.
-    private static func runSecurityCLICommand(timeout: TimeInterval) -> String? {
+    private static func runSecurityCLICommand(service: String, timeout: TimeInterval) -> String? {
         CLIProcessExecutor.executeCommand(
             executableURL: URL(fileURLWithPath: "/usr/bin/security"),
-            arguments: ["find-generic-password", "-s", keychainService, "-w"],
+            arguments: ["find-generic-password", "-s", service, "-w"],
             timeout: timeout
         )
     }

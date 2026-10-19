@@ -16,7 +16,7 @@ struct StackedBarView: View {
             .map { usage in
                 let fiveHour = Int((usage.fiveHourUsage.percentage * 1000).rounded())
                 let weekly = Int(((usage.weeklyUsage?.percentage ?? 0) * 1000).rounded())
-                return "\(usage.service.rawValue):\(fiveHour):\(weekly)"
+                return "\(usage.service.rawValue)#\(usage.accountSortIndex):\(fiveHour):\(weekly)"
             }
             .joined(separator: "|")
         return "\(signature)#hover:\(isHovered ? 1 : 0)"
@@ -117,8 +117,10 @@ struct SingleBarView: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Text(usage.service.shortName)
+            Text(usage.shortName)
                 .font(.system(size: 6, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
                 .foregroundStyle(usage.service.darkColor)
                 .frame(width: 14, alignment: .trailing)
 

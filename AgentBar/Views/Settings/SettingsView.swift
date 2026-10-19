@@ -41,6 +41,7 @@ struct SettingsView: View {
 
     @State private var selectedTab: SettingsTab = .usage
     @State private var colorRevision = 0
+    @State private var claudeAccounts: [ClaudeAccount] = ClaudeAccountStore.load()
     #if AGENTBAR_NOTIFICATION_SOUNDS
     @State private var showingSoundPackHelp = false
     @StateObject private var soundPackVM = SoundPackViewModel()
@@ -148,6 +149,8 @@ struct SettingsView: View {
                 Text("Usage is fetched from Anthropic OAuth API using Claude Code credentials")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                claudeAccountsEditor
             }
 
             Section("OpenAI Codex") {
@@ -279,6 +282,39 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Claude Accounts
+
+    private var claudeAccountsEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Accounts")
+            ForEach($claudeAccounts) { $account in
+                HStack(spacing: 6) {
+                    TextField("Label", text: $account.label)
+                        .frame(width: 110)
+                    TextField("~/.claude (default)", text: $account.configDir)
+                    Button {
+                        claudeAccounts.removeAll { $0.id == account.id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(claudeAccounts.count <= 1)
+                }
+            }
+            Button("Add account") {
+                claudeAccounts.append(ClaudeAccount(configDir: "~/.claude-\(claudeAccounts.count + 1)"))
+            }
+            Text("Leave the directory empty for the default login. For another account, run CLAUDE_CONFIG_DIR=~/.claude-2 claude in Terminal, sign in with /login, then add ~/.claude-2 here. An empty label shows the signed-in email.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: claudeAccounts) { newValue in
+            ClaudeAccountStore.save(newValue)
+            notifyLimitsChanged()
+        }
     }
 
     // MARK: - Agent Colors

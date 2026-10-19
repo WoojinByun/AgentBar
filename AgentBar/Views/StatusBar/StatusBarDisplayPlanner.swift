@@ -25,7 +25,10 @@ enum StatusBarDisplayPlanner {
 
                 let lhsRank = serviceOrder.firstIndex(of: lhs.service) ?? serviceOrder.count
                 let rhsRank = serviceOrder.firstIndex(of: rhs.service) ?? serviceOrder.count
-                return lhsRank < rhsRank
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return lhs.accountSortIndex < rhs.accountSortIndex
             }
     }
 

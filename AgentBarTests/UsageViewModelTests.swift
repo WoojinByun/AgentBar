@@ -88,6 +88,42 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertEqual(vm.usageData[3].service, .zai)
     }
 
+    func testClaudeAccountsSortByAccountIndexAndRecordOnlyFirstInHistory() async {
+        let historyStore = HistoryRecordingStoreSpy()
+        let secondAccount = UsageData(
+            service: .claude,
+            fiveHourUsage: UsageMetric(used: 10, total: 100, unit: .percent, resetTime: nil),
+            weeklyUsage: nil,
+            lastUpdated: Date(),
+            isAvailable: true,
+            accountLabel: "side",
+            accountIndex: 1
+        )
+        let firstAccount = UsageData(
+            service: .claude,
+            fiveHourUsage: UsageMetric(used: 20, total: 100, unit: .percent, resetTime: nil),
+            weeklyUsage: nil,
+            lastUpdated: Date(),
+            isAvailable: true,
+            accountLabel: "main",
+            accountIndex: 0
+        )
+
+        let vm = UsageViewModel(
+            providers: [
+                MockUsageProvider(serviceType: .claude, result: .success(secondAccount)),
+                MockUsageProvider(serviceType: .claude, result: .success(firstAccount)),
+            ],
+            historyStore: historyStore
+        )
+        await vm.fetchAllUsage()
+
+        XCTAssertEqual(vm.usageData.map(\.accountLabel), ["main", "side"])
+        XCTAssertEqual(vm.usageData.map(\.shortName), ["CC", "CC2"])
+        let snapshots = await historyStore.recordedSnapshots()
+        XCTAssertEqual(snapshots.first?.map(\.accountLabel), ["main"])
+    }
+
     func testHistoryRecordsOnlySuccessfulProviderResults() async {
         let historyStore = HistoryRecordingStoreSpy()
         let successProvider = MockUsageProvider(

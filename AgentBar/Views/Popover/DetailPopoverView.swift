@@ -87,7 +87,10 @@ struct DetailPopoverView: View {
 
             let lhsRank = serviceOrder.firstIndex(of: lhs.service) ?? serviceOrder.count
             let rhsRank = serviceOrder.firstIndex(of: rhs.service) ?? serviceOrder.count
-            return lhsRank < rhsRank
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.accountSortIndex < rhs.accountSortIndex
         }
     }
 
@@ -141,6 +144,12 @@ struct ServiceDetailRow: View {
                     .frame(width: 8, height: 8)
                 Text(data.service.rawValue)
                     .font(.subheadline.weight(.medium))
+                if let accountLabel = data.accountLabel {
+                    Text(accountLabel)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 if let planName = data.planName {
                     Text(planName)
                         .font(.caption)

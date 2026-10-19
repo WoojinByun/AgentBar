@@ -77,7 +77,11 @@ final class UsageViewModel: ObservableObject {
                     } catch {
                         // Return zero usage so the bar stays visible
                         return ProviderFetchOutcome(
-                            data: Self.zeroUsageData(for: provider.serviceType),
+                            data: Self.zeroUsageData(
+                                for: provider.serviceType,
+                                accountLabel: provider.accountLabel,
+                                accountIndex: provider.accountIndex
+                            ),
                             shouldRecordHistory: false
                         )
                     }
@@ -87,7 +91,8 @@ final class UsageViewModel: ObservableObject {
             for await result in group {
                 if let result {
                     results.append(result.data)
-                    if result.shouldRecordHistory {
+                    // History is keyed by service only, so record just the first account.
+                    if result.shouldRecordHistory, result.data.accountSortIndex == 0 {
                         successfulResults.append(result.data)
                     }
                 }
@@ -95,7 +100,9 @@ final class UsageViewModel: ObservableObject {
         }
 
         results.sort { a, b in
-            Self.sortIndex(for: a.service) < Self.sortIndex(for: b.service)
+            let lhs = Self.sortIndex(for: a.service)
+            let rhs = Self.sortIndex(for: b.service)
+            return lhs != rhs ? lhs < rhs : a.accountSortIndex < b.accountSortIndex
         }
 
         usageData = results
@@ -110,14 +117,20 @@ final class UsageViewModel: ObservableObject {
         serviceOrder.firstIndex(of: service) ?? Int.max
     }
 
-    nonisolated private static func zeroUsageData(for service: ServiceType) -> UsageData {
+    nonisolated private static func zeroUsageData(
+        for service: ServiceType,
+        accountLabel: String?,
+        accountIndex: Int?
+    ) -> UsageData {
         UsageData(
             service: service,
             fiveHourUsage: UsageMetric(used: 0, total: 100, unit: .percent, resetTime: nil),
             weeklyUsage: nil,
             lastUpdated: Date(),
             isAvailable: true,
-            planName: storedPlanName(for: service)
+            planName: storedPlanName(for: service),
+            accountLabel: accountLabel,
+            accountIndex: accountIndex
         )
     }
 
@@ -142,7 +155,13 @@ final class UsageViewModel: ObservableObject {
         var providers: [any UsageProviderProtocol] = []
 
         if isEnabled("claudeEnabled", in: defaults) {
-            providers.append(ClaudeUsageProvider())
+            let accounts = ClaudeAccountStore.load(defaults: defaults)
+            for (index, account) in accounts.enumerated() {
+                providers.append(ClaudeUsageProvider(
+                    account: account,
+                    accountIndex: accounts.count > 1 ? index : nil
+                ))
+            }
         }
 
         if isEnabled("codexEnabled", in: defaults) {
