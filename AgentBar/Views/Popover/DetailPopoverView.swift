@@ -3,6 +3,9 @@ import SwiftUI
 struct DetailPopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
     static let popoverWidth: CGFloat = 350
+    /// Caps the service list so many accounts scroll instead of growing the popover off screen.
+    static let maxServiceListHeight: CGFloat = 350
+    @State private var serviceListHeight: CGFloat = 0
     private var displayUsageData: [UsageData] {
         Self.sortedForDisplay(viewModel.usageData)
     }
@@ -35,11 +38,18 @@ struct DetailPopoverView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(key: ServiceListHeightKey.self, value: geo.size.height)
+                        }
+                    )
                 }
                 .frame(maxWidth: .infinity)
+                .frame(height: min(serviceListHeight, Self.maxServiceListHeight))
+                .onPreferenceChange(ServiceListHeightKey.self) { height in
+                    serviceListHeight = height
+                }
             }
-
-            Spacer(minLength: 0)
 
             // Footer
             Divider()
@@ -68,7 +78,8 @@ struct DetailPopoverView: View {
             }
         }
         .padding()
-        .frame(width: Self.popoverWidth, height: 480)
+        .frame(width: Self.popoverWidth)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func openSettings() {
@@ -130,6 +141,15 @@ struct DetailPopoverView: View {
         if interval < 5 { return "just now" }
         if interval < 60 { return "\(Int(interval))s ago" }
         return "\(Int(interval / 60))m ago"
+    }
+}
+
+/// Reports the natural height of the service list inside the scroll view.
+private struct ServiceListHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

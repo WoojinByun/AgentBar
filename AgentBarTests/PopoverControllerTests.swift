@@ -14,11 +14,15 @@ final class PopoverControllerTests: XCTestCase {
         let state = currentPopoverState()
         XCTAssertTrue(state.isShown)
         XCTAssertNotNil(state.popover)
-        XCTAssertEqual(state.popover?.contentSize.width, 320)
-        XCTAssertEqual(state.popover?.contentSize.height, 350)
         XCTAssertEqual(state.popover?.behavior, .transient)
         XCTAssertTrue(state.popover?.animates ?? false)
-        XCTAssertTrue(state.popover?.contentViewController is NSHostingController<DetailPopoverView>)
+        let hostingController = state.popover?.contentViewController as? NSHostingController<DetailPopoverView>
+        XCTAssertNotNil(hostingController)
+        XCTAssertEqual(
+            hostingController?.sizingOptions,
+            .preferredContentSize,
+            "Expected the popover to follow the SwiftUI content size instead of a fixed size."
+        )
 
         PopoverController.shared.hide()
         withExtendedLifetime(window) {}

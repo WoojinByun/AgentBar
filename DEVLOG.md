@@ -2,6 +2,14 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 102: 상세 팝업 높이를 내용에 맞춤
+
+- **원인**: `DetailPopoverView`가 `.frame(width:height: 480)`으로 높이를 고정하고, 서비스 목록 `ScrollView`와 `Spacer(minLength: 0)`가 남는 세로 공간을 채웠습니다. 그래서 서비스가 2개뿐이어도 마지막 행과 하단 영역 사이에 큰 빈 공간이 생겼습니다.
+- **내용 높이 측정**: 서비스 목록 높이를 `GeometryReader`와 `ServiceListHeightKey` PreferenceKey로 측정해 `ScrollView`에 `.frame(height: min(측정값, maxServiceListHeight))`를 적용합니다. `maxServiceListHeight`는 350이며, 넘치는 서비스는 기존처럼 스크롤합니다. 고정 높이와 `Spacer`를 없애고 `.fixedSize(horizontal: false, vertical: true)`로 루트 뷰가 내용 높이를 따르게 했습니다. 너비(350)와 행 디자인은 그대로입니다.
+- **팝업 크기 연동**: `PopoverController`가 `NSHostingController.sizingOptions = .preferredContentSize`를 설정해 계정 추가·삭제나 제공자 상태 변화로 행 수가 바뀌면 팝업 크기도 따라갑니다. 실제 크기와 맞지 않던 `popover.contentSize = 320×350`은 제거했습니다.
+- **추가한 테스트**: `testDetailPopoverFitsHeightToFewUsageRows`, `testDetailPopoverCapsHeightWhenUsageRowsOverflow`. `PopoverControllerTests`는 고정 크기 대신 `sizingOptions`를 확인합니다.
+- 기본 플랜 테스트 308개 중 307개 통과, 1개 건너뜀(`-testPlan AgentBar`)
+
 ## 개발 기록 101: Claude 사용량 초기화 반영 지연과 429 처리 수정
 
 - **오래된 캐시 표시**: 조회가 실패해 캐시를 반환할 때 `lastUpdated`에 현재 시각 대신 마지막 성공 시각(`claudeUsageCache[.<id>].savedAt`)을 넣고, `statusMessage`로 `Rate limited — showing last known usage` 또는 `Update failed — showing last known usage`를 표시합니다. 팝업은 기존 Codex 경로대로 `Last success:` 시각을 함께 보여줍니다. 메뉴 막대에서 사라지지 않도록 `isAvailable`은 true로 유지합니다.

@@ -59,6 +59,57 @@ final class DetailPopoverViewTests: XCTestCase {
         withExtendedLifetime(rendered.window) {}
     }
 
+    func testDetailPopoverFitsHeightToFewUsageRows() {
+        let viewModel = UsageViewModel(providers: [])
+        viewModel.usageData = makeUsageRows(count: 2)
+
+        let rendered = renderPopover(viewModel: viewModel)
+        let scrollView = waitForScrollViewLayout(in: rendered.hostingView)
+        let fittingSize = waitForFittingSize(of: rendered.hostingView)
+
+        XCTAssertNotNil(scrollView, "Expected a scroll view when usage data is present.")
+        guard let scrollView else { return }
+
+        let viewportHeight = scrollView.contentView.bounds.height
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertEqual(
+            viewportHeight,
+            documentHeight,
+            accuracy: 1.0,
+            "Expected the scroll region to shrink to the rows instead of leaving blank space."
+        )
+        XCTAssertLessThan(
+            fittingSize.height,
+            DetailPopoverView.maxServiceListHeight,
+            "Expected the popover to be shorter than the scroll cap when only two rows are shown."
+        )
+        XCTAssertEqual(fittingSize.width, DetailPopoverView.popoverWidth, accuracy: 0.5)
+
+        withExtendedLifetime(rendered.window) {}
+    }
+
+    func testDetailPopoverCapsHeightWhenUsageRowsOverflow() {
+        let viewModel = UsageViewModel(providers: [])
+        viewModel.usageData = makeUsageRows(count: 36)
+
+        let rendered = renderPopover(viewModel: viewModel)
+        let scrollView = waitForScrollViewLayout(in: rendered.hostingView)
+        let fittingSize = waitForFittingSize(of: rendered.hostingView)
+
+        XCTAssertNotNil(scrollView, "Expected a scroll view when usage data is present.")
+        guard let scrollView else { return }
+
+        XCTAssertEqual(
+            scrollView.contentView.bounds.height,
+            DetailPopoverView.maxServiceListHeight,
+            accuracy: 1.0,
+            "Expected the scroll region to stop growing at the cap."
+        )
+        XCTAssertLessThanOrEqual(fittingSize.height, 480, "Expected the popover height to stay capped.")
+
+        withExtendedLifetime(rendered.window) {}
+    }
+
     func testBuyMeACoffeeButtonIsNotShown() {
         let view = DetailPopoverView(viewModel: UsageViewModel(providers: []))
 
@@ -217,6 +268,27 @@ final class DetailPopoverViewTests: XCTestCase {
 
         XCTFail("Timed out waiting for scroll view layout to stabilize with non-zero dimensions.")
         return nil
+    }
+
+    /// Waits until the measured service list height settles and returns the content-fitting size.
+    private func waitForFittingSize(of hostingView: NSView, timeout: TimeInterval = 1.0) -> NSSize {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousSize: NSSize?
+
+        while Date() < deadline {
+            hostingView.layoutSubtreeIfNeeded()
+            let size = hostingView.fittingSize
+            if let previousSize,
+               abs(previousSize.width - size.width) < 0.5,
+               abs(previousSize.height - size.height) < 0.5 {
+                return size
+            }
+            previousSize = size
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTFail("Timed out waiting for popover fitting size to stabilize.")
+        return previousSize ?? .zero
     }
 
     private func findFirstScrollView(in view: NSView) -> NSScrollView? {

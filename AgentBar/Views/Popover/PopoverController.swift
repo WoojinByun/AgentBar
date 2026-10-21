@@ -22,12 +22,14 @@ final class PopoverController {
 
     func show(relativeTo button: NSButton, viewModel: UsageViewModel) {
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 320, height: 350)
         popover.behavior = .transient
         popover.animates = true
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: DetailPopoverView(viewModel: viewModel)
         )
+        // Let the popover follow the SwiftUI content height as services are added or removed.
+        hostingController.sizingOptions = .preferredContentSize
+        popover.contentViewController = hostingController
         popover.delegate = PopoverDelegateHandler.shared
         // An accessory app is not active when the status item is clicked, so
         // `.transient` alone never sees outside clicks. Activate first.
