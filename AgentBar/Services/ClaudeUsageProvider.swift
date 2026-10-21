@@ -112,6 +112,19 @@ struct ClaudeAccount: Codable, Identifiable, Equatable, Sendable {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
     }
 
+    /// Organization of this config dir's current login (`oauthAccount.organizationUuid`).
+    /// Statusline snapshots are only trusted from sessions running under this org.
+    func organizationUUID() -> String? {
+        guard let data = try? Data(contentsOf: accountMetadataURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = object["oauthAccount"] as? [String: Any],
+              let org = oauth["organizationUuid"] as? String,
+              !org.isEmpty else {
+            return nil
+        }
+        return org
+    }
+
     /// Signed-in email from the account metadata file, if any.
     func signedInEmail() -> String? {
         guard let data = try? Data(contentsOf: accountMetadataURL),
@@ -174,6 +187,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     private let defaults: UserDefaults
     private let now: @Sendable () -> Date
     private let statusLineSnapshot: (@Sendable (ClaudeAccount) -> ClaudeStatusLineSnapshot?)?
+    private let accountOrganization: @Sendable (ClaudeAccount) -> String?
 
     static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
@@ -187,8 +201,6 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     private static let retryAfterMax: TimeInterval = 60 * 60
     /// Statusline `rate_limits` at most this old replace the usage API call.
     static let statusLineMaxAge: TimeInterval = 60
-    /// Per-session observation markers older than this are dropped.
-    private static let statusLineMarkerRetention: TimeInterval = 24 * 60 * 60
     nonisolated(unsafe) private static var tokenCache: [String: (token: String?, lookedUpAt: Date)] = [:]
     typealias SecurityCLIProcessRuntime = CLIProcessRuntime
     nonisolated(unsafe) static var securityCLIRunner: @Sendable (_ service: String, _ timeout: TimeInterval) -> String? = {
@@ -203,7 +215,8 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         account: ClaudeAccount = .defaultLogin,
         accountIndex: Int? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        statusLineSnapshot: (@Sendable (ClaudeAccount) -> ClaudeStatusLineSnapshot?)? = nil
+        statusLineSnapshot: (@Sendable (ClaudeAccount) -> ClaudeStatusLineSnapshot?)? = nil,
+        accountOrganization: (@Sendable (ClaudeAccount) -> String?)? = nil
     ) {
         self.session = session
         self.credentialProvider = credentialProvider ?? { Self.readToken(for: account) }
@@ -212,6 +225,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         self.accountIndex = accountIndex
         self.now = now
         self.statusLineSnapshot = statusLineSnapshot
+        self.accountOrganization = accountOrganization ?? { $0.organizationUUID() }
     }
 
     /// Shown only when several accounts are configured or the user named this one.
@@ -305,18 +319,38 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
     // MARK: - Statusline snapshots
 
-    /// Uses the snapshot when its data was observed at most `statusLineMaxAge` ago.
-    /// Statusline values are authoritative: drops (including to 0) are taken as-is
-    /// and written to the same cache the API path and stale notice read.
+    /// Uses a snapshot only when
+    /// 1. the session runs under this account's current login: its transcript's last
+    ///    `credential_org` equals the config dir's `oauthAccount.organizationUuid`
+    ///    (an unknown identity on either side rejects it), and
+    /// 2. its data is fresh: the session's last API response (last assistant message,
+    ///    capped by the snapshot time) is at most `statusLineMaxAge` old. Idle sessions
+    ///    re-render their statusline with hours-old rate limits, so render time alone is not enough.
+    /// Accepted values are authoritative: drops (including to 0) are taken as-is and
+    /// written to the same cache the API path and stale notice read.
     private func usageFromStatusLine(_ snapshot: ClaudeStatusLineSnapshot) -> UsageData? {
-        guard snapshot.fiveHour != nil || snapshot.sevenDay != nil else { return nil }
+        guard snapshot.fiveHour != nil || snapshot.sevenDay != nil,
+              let sessionOrg = snapshot.sessionOrganizationUUID,
+              let accountOrg = accountOrganization(account),
+              sessionOrg == accountOrg,
+              let lastAPIResponse = snapshot.lastAPIResponseAt else {
+            return nil
+        }
         let now = self.now()
-        let observedAt = statusLineObservedAt(snapshot, now: now)
+        let observedAt = min(lastAPIResponse, snapshot.receivedAt)
         let age = now.timeIntervalSince(observedAt)
         guard age >= -Self.statusLineMaxAge, age <= Self.statusLineMaxAge else { return nil }
 
-        let fiveHour = applyStatusLineWindow(snapshot.fiveHour, cacheKey: cacheKey("fiveHour"), now: now)
-        let sevenDay = applyStatusLineWindow(snapshot.sevenDay, cacheKey: cacheKey("sevenDay"), now: now)
+        // Claude Code omits a window the API did not report or whose reset passed.
+        // If the cache still holds a live value for it, showing the snapshot would mix
+        // two sources in one row set, so the API path decides instead.
+        let fiveHourKey = cacheKey("fiveHour")
+        let sevenDayKey = cacheKey("sevenDay")
+        if snapshot.fiveHour == nil, validCachedMetric(forKey: fiveHourKey, now: now) != nil { return nil }
+        if snapshot.sevenDay == nil, validCachedMetric(forKey: sevenDayKey, now: now) != nil { return nil }
+
+        let fiveHour = applyStatusLineWindow(snapshot.fiveHour, cacheKey: fiveHourKey)
+        let sevenDay = applyStatusLineWindow(snapshot.sevenDay, cacheKey: sevenDayKey)
         defaults.set(observedAt.timeIntervalSince1970, forKey: cacheKey("savedAt"))
 
         let planName = (defaults.string(forKey: "claudePlan")
@@ -334,39 +368,15 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         )
     }
 
-    private func applyStatusLineWindow(_ window: ClaudeStatusLineWindow?, cacheKey: String, now: Date) -> UsageMetric {
+    /// A missing window here has no live cached value: it is not active, so it shows 0%.
+    private func applyStatusLineWindow(_ window: ClaudeStatusLineWindow?, cacheKey: String) -> UsageMetric {
         guard let window else {
-            // Claude Code omits a window whose reset has passed or that the API did not report.
-            return validCachedMetric(forKey: cacheKey, now: now)
-                ?? UsageMetric(used: 0, total: 100, unit: .percent, resetTime: nil)
+            return UsageMetric(used: 0, total: 100, unit: .percent, resetTime: nil)
         }
         let metric = UsageMetric(used: window.usedPercentage, total: 100, unit: .percent, resetTime: window.resetsAt)
         defaults.removeObject(forKey: "\(cacheKey).pendingZero")
         saveMetricCache(metric, forKey: cacheKey)
         return metric
-    }
-
-    /// A session re-renders its statusline on local events (mode changes, timers)
-    /// with the rate limits of its last API response. When `session_id` and
-    /// `cost.total_api_duration_ms` are unchanged, the data is as old as the
-    /// first time this provider saw that pair.
-    private func statusLineObservedAt(_ snapshot: ClaudeStatusLineSnapshot, now: Date) -> Date {
-        guard let session = snapshot.sessionID, let duration = snapshot.apiDurationMs else {
-            return snapshot.receivedAt
-        }
-        let markersKey = cacheKey("statusLineMarkers")
-        var markers = defaults.dictionary(forKey: markersKey) as? [String: [Double]] ?? [:]
-        markers = markers.filter { now.timeIntervalSince1970 - ($0.value.last ?? 0) < Self.statusLineMarkerRetention }
-
-        let observedAt: Date
-        if let marker = markers[session], marker.count == 2, marker[0] == duration {
-            observedAt = min(Date(timeIntervalSince1970: marker[1]), snapshot.receivedAt)
-        } else {
-            observedAt = snapshot.receivedAt
-            markers[session] = [duration, observedAt.timeIntervalSince1970]
-        }
-        defaults.set(markers, forKey: markersKey)
-        return observedAt
     }
 
     /// Returns cached usage data when available, otherwise re-throws the original error.

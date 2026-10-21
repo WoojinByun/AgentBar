@@ -9,12 +9,13 @@ final class ClaudeStatusLineSnapshotTests: XCTestCase {
     private func snapshotJSON(
         receivedAt: Int = 2_000_000_000,
         configDir: String = "",
+        transcriptPath: String = "/tmp/agentbar-transcript.jsonl",
         rateLimits: String = """
         {"five_hour":{"used_percentage":42.5,"resets_at":2000003600},"seven_day":{"used_percentage":7,"resets_at":2000500000}}
         """
     ) -> Data {
         Data("""
-        {"version":1,"received_at":\(receivedAt),"config_dir":"\(configDir)","payload":{"session_id":"s-1","cost":{"total_api_duration_ms":1234},"rate_limits":\(rateLimits)}
+        {"version":1,"received_at":\(receivedAt),"config_dir":"\(configDir)","payload":{"session_id":"s-1","transcript_path":"\(transcriptPath)","cost":{"total_api_duration_ms":1234},"rate_limits":\(rateLimits)}
         }
         """.utf8)
     }
@@ -29,7 +30,8 @@ final class ClaudeStatusLineSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.fiveHour?.resetsAt, Date(timeIntervalSince1970: 2_000_003_600))
         XCTAssertEqual(snapshot.sevenDay?.usedPercentage, 7)
         XCTAssertEqual(snapshot.sessionID, "s-1")
-        XCTAssertEqual(snapshot.apiDurationMs, 1234)
+        XCTAssertEqual(snapshot.transcriptPath, "/tmp/agentbar-transcript.jsonl")
+        XCTAssertNil(snapshot.sessionOrganizationUUID, "identity comes from the transcript, not the payload")
     }
 
     func testRejectsSnapshotWithoutAnyKnownWindow() {
@@ -72,6 +74,137 @@ final class ClaudeStatusLineSnapshotTests: XCTestCase {
             Date(timeIntervalSince1970: 2_000_000_500)
         )
         XCTAssertNil(store.latestSnapshot(for: ClaudeAccount(configDir: "~/.claude-3")))
+    }
+
+    func testStoreAddsSessionIdentityAndLastAPIResponseFromTranscript() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let transcript = dir.appendingPathComponent("session.jsonl")
+        try ClaudeTranscriptInspectorTests.lines([
+            ClaudeTranscriptInspectorTests.credentialOrg("org-A"),
+            ClaudeTranscriptInspectorTests.assistant("2033-05-18T03:33:00.500Z")
+        ]).write(to: transcript)
+        try snapshotJSON(transcriptPath: transcript.path).write(to: dir.appendingPathComponent("default.json"))
+
+        let store = ClaudeStatusLineSnapshotStore(directory: dir, inspector: ClaudeTranscriptInspector())
+        let snapshot = try XCTUnwrap(store.latestSnapshot(for: .defaultLogin))
+        XCTAssertEqual(snapshot.sessionOrganizationUUID, "org-A")
+        XCTAssertEqual(snapshot.lastAPIResponseAt, DateUtils.parseISO8601("2033-05-18T03:33:00.500Z"))
+    }
+
+    func testAccountOrganizationComesFromConfigDirMetadata() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(#"{"oauthAccount":{"organizationUuid":"org-B","accountUuid":"acct"}}"#.utf8)
+            .write(to: dir.appendingPathComponent(".claude.json"))
+
+        XCTAssertEqual(ClaudeAccount(configDir: dir.path).organizationUUID(), "org-B")
+        XCTAssertNil(ClaudeAccount(configDir: dir.appendingPathComponent("missing").path).organizationUUID())
+    }
+}
+
+// MARK: - Transcript identity and API activity
+
+final class ClaudeTranscriptInspectorTests: XCTestCase {
+    static func credentialOrg(_ org: String) -> String {
+        #"{"type":"attachment","attachment":{"type":"credential_org","organizationUuid":"\#(org)"},"timestamp":"2033-05-18T00:00:00.000Z"}"#
+    }
+
+    static func assistant(_ timestamp: String) -> String {
+        #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"credential_org in text"}]},"timestamp":"\#(timestamp)"}"#
+    }
+
+    static func lines(_ lines: [String]) -> Data {
+        Data(lines.map { $0 + "\n" }.joined().utf8)
+    }
+
+    private var tempDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: tempDir)
+        super.tearDown()
+    }
+
+    private func append(_ data: Data, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+        try handle.close()
+    }
+
+    func testReportsLastCredentialOrgAndLastAssistantTime() throws {
+        let url = tempDir.appendingPathComponent("t.jsonl")
+        try Self.lines([
+            Self.credentialOrg("org-old"),
+            Self.assistant("2033-05-18T01:00:00.000Z"),
+            #"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2033-05-18T02:00:00.000Z"}"#,
+            Self.credentialOrg("org-new"),
+            Self.assistant("2033-05-18T02:00:05.250Z"),
+            #"{"type":"artifact-autoreact-ledger","v":1}"#
+        ]).write(to: url)
+
+        let evidence = try XCTUnwrap(ClaudeTranscriptInspector().evidence(forTranscriptAt: url.path))
+        XCTAssertEqual(evidence.organizationUUID, "org-new")
+        XCTAssertEqual(evidence.lastAssistantAt, DateUtils.parseISO8601("2033-05-18T02:00:05.250Z"))
+    }
+
+    func testScansAppendedLinesIncrementallyAndWaitsForCompleteLines() throws {
+        let url = tempDir.appendingPathComponent("t.jsonl")
+        let inspector = ClaudeTranscriptInspector()
+        try Self.lines([Self.credentialOrg("org-A"), Self.assistant("2033-05-18T01:00:00.000Z")]).write(to: url)
+        XCTAssertEqual(inspector.evidence(forTranscriptAt: url.path)?.organizationUUID, "org-A")
+
+        // A half-written line is not consumed yet.
+        let next = Self.assistant("2033-05-18T01:05:00.000Z")
+        try append(Data(next.prefix(30).utf8), to: url)
+        XCTAssertEqual(inspector.evidence(forTranscriptAt: url.path)?.lastAssistantAt,
+                       DateUtils.parseISO8601("2033-05-18T01:00:00.000Z"))
+
+        try append(Data((next.dropFirst(30) + "\n").utf8), to: url)
+        try append(Self.lines([Self.credentialOrg("org-B")]), to: url)
+        let evidence = inspector.evidence(forTranscriptAt: url.path)
+        XCTAssertEqual(evidence?.lastAssistantAt, DateUtils.parseISO8601("2033-05-18T01:05:00.000Z"))
+        XCTAssertEqual(evidence?.organizationUUID, "org-B")
+    }
+
+    func testRescansWhenTranscriptIsReplacedBySmallerFile() throws {
+        let url = tempDir.appendingPathComponent("t.jsonl")
+        let inspector = ClaudeTranscriptInspector()
+        try Self.lines([Self.credentialOrg("org-A"), Self.assistant("2033-05-18T01:00:00.000Z")]).write(to: url)
+        _ = inspector.evidence(forTranscriptAt: url.path)
+
+        try Self.lines([Self.credentialOrg("org-C")]).write(to: url)
+        let evidence = inspector.evidence(forTranscriptAt: url.path)
+        XCTAssertEqual(evidence?.organizationUUID, "org-C")
+        XCTAssertNil(evidence?.lastAssistantAt)
+    }
+
+    func testSessionEvidenceIncludesSubagentTranscripts() throws {
+        // While a subagent works, API responses land in <session>/subagents/agent-*.jsonl.
+        let url = tempDir.appendingPathComponent("session.jsonl")
+        try Self.lines([Self.credentialOrg("org-A"), Self.assistant("2033-05-18T01:00:00.000Z")]).write(to: url)
+        let subagents = tempDir.appendingPathComponent("session/subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        try Self.lines([Self.credentialOrg("org-A"), Self.assistant("2033-05-18T01:30:00.000Z")])
+            .write(to: subagents.appendingPathComponent("agent-1.jsonl"))
+        try Data("{}".utf8).write(to: subagents.appendingPathComponent("agent-1.meta.json"))
+
+        let evidence = try XCTUnwrap(ClaudeTranscriptInspector().sessionEvidence(forTranscriptAt: url.path))
+        XCTAssertEqual(evidence.organizationUUID, "org-A")
+        XCTAssertEqual(evidence.lastAssistantAt, DateUtils.parseISO8601("2033-05-18T01:30:00.000Z"))
+    }
+
+    func testMissingTranscriptHasNoEvidence() {
+        XCTAssertNil(ClaudeTranscriptInspector().evidence(forTranscriptAt: tempDir.appendingPathComponent("none").path))
     }
 }
 

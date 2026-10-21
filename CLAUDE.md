@@ -81,7 +81,7 @@ AgentBarTests/   서비스별 제공자·뷰 모델·유틸리티 단위 테스�
 
 | 서비스 | 데이터 출처 | 단위 | 참고 |
 |---------|-----------|------|-------|
-| Claude Code | statusline `rate_limits` 스냅숏(60초 이내) → Anthropic OAuth API (`/api/oauth/usage`) | 백분율 | macOS 키체인의 "Claude Code-credentials"에서 토큰 조회, 스냅숏은 `ClaudeStatusLineSnapshotStore` |
+| Claude Code | statusline `rate_limits` 스냅숏(세션 org가 계정 org와 같고 마지막 API 응답이 60초 이내) → Anthropic OAuth API (`/api/oauth/usage`) | 백분율 | macOS 키체인의 "Claude Code-credentials"에서 토큰 조회, 스냅숏은 `ClaudeStatusLineSnapshotStore`, 세션 신원·활동은 `ClaudeTranscriptInspector` |
 | OpenAI Codex | Codex App Server (`account/rateLimits/read`) | 백분율 | Codex CLI 로그인 사용, 서버의 실제 한도 기간에 따른 라벨 표시, 초기화권 포함 |
 | Google Gemini | 로컬 로그(`~/.gemini/tmp/`) | 요청 수 | 일일 한도만 사용, weeklyUsage=nil |
 | GitHub Copilot | GitHub API (`/copilot_internal/user`) | 요청 수 | 키체인의 PAT 사용, 월간 프리미엄 요청, weeklyUsage=nil |

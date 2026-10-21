@@ -75,7 +75,10 @@ Claude Code는 `CLAUDE_CONFIG_DIR`마다 로그인 정보를 따로 보관합니
 Claude 사용량 API(`/api/oauth/usage`)는 요청 제한(HTTP 429)이 잦습니다. Claude Code는 statusline 명령에 API 응답 헤더로 받은 `rate_limits`(`five_hour`·`seven_day`의 `used_percentage`, 초 단위 `resets_at`)를 넘겨주므로, AgentBar는 이 값을 우선 사용합니다.
 
 - 설정 → Notifications 탭 `Agent Sources`의 `Install statusline feed`를 누르면 등록된 Claude 계정마다 `settings.json`의 `statusLine.command`를 AgentBar 래퍼(`~/Library/Application Support/AgentBar/claude-statusline/statusline-wrapper.sh`)로 바꿉니다. 바꾸기 전 파일은 `~/.agentbar/backups/<시각>/`에 백업하고, 원래 명령은 `originals/`에 저장해 같은 입력으로 계속 실행합니다(Orca 등 기존 statusline 유지).
-- 래퍼는 payload를 `snapshots/<키>.json`에 저장합니다. 매 조회에서 해당 계정(`CLAUDE_CONFIG_DIR` 기준)의 값이 60초 이내면 API를 호출하지 않고, 아니면 기존 API 조회(캐시·백오프 포함)로 돌아갑니다.
+- 래퍼는 payload를 `snapshots/<키>.json`에 저장합니다. 매 조회에서 해당 계정(`CLAUDE_CONFIG_DIR` 기준)의 스냅숏이 아래 조건을 모두 만족할 때만 API를 호출하지 않고, 아니면 기존 API 조회(캐시·백오프 포함)로 돌아갑니다.
+  - 그 세션이 이 계정의 현재 로그인으로 실행 중: 세션 대화 기록(`transcript_path`)의 마지막 `credential_org`가 설정 디렉터리 `.claude.json`의 `oauthAccount.organizationUuid`와 같아야 합니다. 어느 쪽이든 알 수 없으면 쓰지 않습니다.
+  - 값이 최신: 세션(하위 에이전트 기록 포함)의 마지막 API 응답이 60초 이내여야 합니다. 유휴 세션도 statusline을 다시 그리므로 수신 시각만으로는 판단하지 않습니다.
+  - 스냅숏에 없는 기간(예: `five_hour`)의 캐시가 아직 유효하면 출처가 섞이지 않도록 API 경로를 씁니다.
 - 다른 도구가 `statusLine`을 다시 덮어쓰면 같은 화면의 상태 행에 `replaced`로 표시됩니다. `Remove`를 누르면 원래 `statusLine`을 복원합니다.
 
 <a id="install"></a>

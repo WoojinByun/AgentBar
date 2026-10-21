@@ -2,6 +2,17 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 105: statusline 스냅숏을 그 계정의 로그인과 최신 API 응답으로만 인정
+
+- **증상**: 피드 설치 직후 기본 계정의 7d가 API의 17% 대신 79%로 표시되었습니다. `statusLine.command`가 바뀌면 Claude Code가 모든 세션의 statusline을 다시 그리는데, 15:10 이후 유휴였던 세션(PID 15696, `42891c0d`)이 메모리에 있던 사용량 초기화 이전 값을 새 수신 시각으로 보냈습니다. 그 세션 기록의 `credential_org`는 현재 기본 로그인과 같은 org(`af947993`)였으므로 다른 로그인이 아니라 오래된 데이터였습니다. 기존 유휴 판별(`session_id`+`total_api_duration_ms`)은 처음 본 세션을 걸러내지 못했습니다.
+- **세션 신원**: statusline payload에는 계정 정보가 없지만 `transcript_path`의 대화 기록(JSONL)에 Claude Code가 세션 시작과 org 변경 때 `{"type":"attachment","attachment":{"type":"credential_org","organizationUuid":…}}`를 남깁니다(실제 기록에서 시작 org와 중간 전환 모두 확인). `ClaudeTranscriptInspector`가 마지막 `credential_org`를 세션 org로 읽고, `ClaudeAccount.organizationUUID()`가 설정 디렉터리 `.claude.json`의 `oauthAccount.organizationUuid`를 읽습니다. 둘이 같을 때만 스냅숏을 씁니다. 어느 한쪽을 알 수 없으면 쓰지 않습니다. 이 직접 신호가 있어 프로세스 시작 시각 비교나 API 교차 검증은 넣지 않았습니다.
+- **최신성**: 세션의 마지막 `"type":"assistant"` 메시지 시각을 마지막 API 응답으로 보고, `min(마지막 API 응답, 수신 시각)`이 60초 이내일 때만 씁니다. 하위 에이전트가 일하는 동안의 API 응답은 `<기록>/subagents/agent-*.jsonl`에 쌓이므로 함께 봅니다(`sessionEvidence`). 기록은 이어 쓴 완전한 줄만 증분으로 읽고, 파일이 작아지거나 바뀌면 처음부터 다시 읽습니다. 이전의 `statusLineMarkers` 방식은 제거했습니다.
+- **빠진 기간**: 스냅숏에 없는 기간의 캐시가 아직 유효하면(예: API가 보고한 5h 100%) 한 화면에 두 출처가 섞이므로 스냅숏을 쓰지 않고 API 경로로 갑니다. 유효한 캐시가 없으면 그 기간은 0%(초기화 시각 없음)로 표시합니다.
+- 계정별 상태(캐시, `savedAt`, 백오프, 연속 0)는 계정 키로 분리된 그대로이며, 다른 org의 세션 값은 그 계정에 들어가지 않습니다. 래퍼 스크립트는 바뀌지 않아 앱만 다시 설치하면 됩니다.
+- 실제 환경 점검(읽기 전용): PID 15696 스냅숏은 기본 계정에서 거부(마지막 API 응답 15:10), 활성 `~/.claude-2` 세션은 수락(12초 전), 두 스냅숏 모두 다른 계정에서는 org 불일치로 거부.
+- 추가한 테스트: `ClaudeTranscriptInspectorTests`(하위 에이전트 기록 포함 5개), 스냅숏 저장소의 신원 보강과 계정 org 읽기, 제공자의 이전 로그인 세션 거부·현재 로그인 수락·신원 불명 거부·빠진 기간 처리 2개·두 계정 독립
+- 기본 플랜 테스트 348개 중 347개 통과, 1개 건너뜀(`-testPlan AgentBar`)
+
 ## 개발 기록 104: 메뉴 막대 막대 행이 서비스 수에 맞춰 높이를 채우도록 수정
 
 - **원인**: 상태 아이템 행 높이가 3행 기준(6pt, 간격 1pt)으로 고정되어 1~2개일 때 아래가 비었습니다.

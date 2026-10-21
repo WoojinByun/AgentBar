@@ -821,39 +821,44 @@ final class ClaudeUsageProviderTests: XCTestCase {
     // MARK: - Statusline snapshots
 
     private static let statusLineNow = Date(timeIntervalSince1970: 2_000_000_000)
+    private static let fiveHourReset = Date(timeIntervalSince1970: 4_070_926_800)
+    private static let sevenDayReset = Date(timeIntervalSince1970: 4_071_085_200)
 
+    /// `lastAPIResponseAt` defaults to `receivedAt`; `org` is the session's credential org.
     private static func statusLineSnapshot(
         receivedAt: Date,
         fiveHour: Double?,
         sevenDay: Double?,
-        sessionID: String? = "session-1",
-        apiDurationMs: Double? = nil
+        org: String? = "org-A",
+        lastAPIResponseAt: Date? = nil
     ) -> ClaudeStatusLineSnapshot {
         ClaudeStatusLineSnapshot(
             receivedAt: receivedAt,
             configDir: nil,
-            fiveHour: fiveHour.map {
-                ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: Date(timeIntervalSince1970: 4_070_926_800))
-            },
-            sevenDay: sevenDay.map {
-                ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: Date(timeIntervalSince1970: 4_071_085_200))
-            },
-            sessionID: sessionID,
-            apiDurationMs: apiDurationMs ?? receivedAt.timeIntervalSince1970
+            fiveHour: fiveHour.map { ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: fiveHourReset) },
+            sevenDay: sevenDay.map { ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: sevenDayReset) },
+            sessionID: "session-1",
+            transcriptPath: "/tmp/session-1.jsonl",
+            sessionOrganizationUUID: org,
+            lastAPIResponseAt: lastAPIResponseAt ?? receivedAt
         )
     }
 
     private func makeStatusLineProvider(
         defaults: UserDefaults,
         clock: TestClock,
-        snapshot: SnapshotBox
+        snapshot: SnapshotBox,
+        account: ClaudeAccount = .defaultLogin,
+        accountOrg: String? = "org-A"
     ) -> ClaudeUsageProvider {
         ClaudeUsageProvider(
             session: MockURLProtocol.session(),
             credentialProvider: { "test-token" },
             defaults: defaults,
+            account: account,
             now: { clock.now() },
-            statusLineSnapshot: { _ in snapshot.value }
+            statusLineSnapshot: { _ in snapshot.value },
+            accountOrganization: { _ in accountOrg }
         )
     }
 
@@ -871,7 +876,7 @@ final class ClaudeUsageProviderTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requestCount, 0, "a fresh statusline snapshot must not hit the API")
         XCTAssertEqual(usage.fiveHourUsage.used, 33.3)
         XCTAssertEqual(usage.fiveHourUsage.unit, .percent)
-        XCTAssertEqual(usage.fiveHourUsage.resetTime, Date(timeIntervalSince1970: 4_070_926_800))
+        XCTAssertEqual(usage.fiveHourUsage.resetTime, Self.fiveHourReset)
         XCTAssertEqual(usage.weeklyUsage?.used, 12)
         XCTAssertNil(usage.statusMessage)
         XCTAssertTrue(usage.isAvailable)
@@ -961,34 +966,155 @@ final class ClaudeUsageProviderTests: XCTestCase {
     }
 
     func testIdleRerenderOfOldStatusLineDataIsNotTreatedAsFresh() async throws {
+        // Changing statusLine.command (or a mode switch) re-renders idle sessions
+        // with the rate limits of their last API response, hours ago.
         let defaults = makeDefaultsSuite()
         let clock = TestClock(Self.statusLineNow)
         let box = SnapshotBox(Self.statusLineSnapshot(
-            receivedAt: clock.now(), fiveHour: 20, sevenDay: 30, sessionID: "idle", apiDurationMs: 5_000
+            receivedAt: clock.now(), fiveHour: nil, sevenDay: 79,
+            lastAPIResponseAt: clock.now().addingTimeInterval(-4 * 3600)
         ))
         let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
-        _ = try await provider.fetchUsage()
-        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 17), statusCode: 200)
 
-        // Five minutes later the same session re-renders its statusline without a
-        // new API response (same total_api_duration_ms): the data is still old.
-        clock.advance(by: 300)
-        box.value = Self.statusLineSnapshot(
-            receivedAt: clock.now(), fiveHour: 20, sevenDay: 30, sessionID: "idle", apiDurationMs: 5_000
-        )
-        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 25, sevenDay: 31), statusCode: 200)
         let usage = try await provider.fetchUsage()
         XCTAssertEqual(MockURLProtocol.requestCount, 1)
-        XCTAssertEqual(usage.fiveHourUsage.used, 25)
+        XCTAssertEqual(usage.weeklyUsage?.used, 17)
 
         // A new API response in that session makes it fresh again.
         clock.advance(by: 60)
-        box.value = Self.statusLineSnapshot(
-            receivedAt: clock.now(), fiveHour: 26, sevenDay: 31, sessionID: "idle", apiDurationMs: 6_000
-        )
+        box.value = Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 100, sevenDay: 18)
         let fresh = try await provider.fetchUsage()
         XCTAssertEqual(MockURLProtocol.requestCount, 1)
-        XCTAssertEqual(fresh.fiveHourUsage.used, 26)
+        XCTAssertEqual(fresh.weeklyUsage?.used, 18)
+    }
+
+    func testSnapshotFromOldLoginSessionIsIgnored() async throws {
+        // Same config dir, but the session still runs under the previous login's org.
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 1, sevenDay: 79, org: "org-old"))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box, accountOrg: "org-A")
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 30, sevenDay: 17), statusCode: 200)
+
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(usage.weeklyUsage?.used, 17)
+    }
+
+    func testSnapshotFromCurrentLoginSessionIsUsed() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 30, sevenDay: 18, org: "org-new"))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box, accountOrg: "org-new")
+
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+        XCTAssertEqual(usage.weeklyUsage?.used, 18)
+    }
+
+    func testSnapshotWithUnknownIdentityIsIgnored() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 30, sevenDay: 17), statusCode: 200)
+
+        let noSessionOrg = makeStatusLineProvider(
+            defaults: defaults, clock: clock,
+            snapshot: SnapshotBox(Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 1, sevenDay: 2, org: nil))
+        )
+        _ = try await noSessionOrg.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        let noAccountOrg = makeStatusLineProvider(
+            defaults: makeDefaultsSuite(), clock: clock,
+            snapshot: SnapshotBox(Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 1, sevenDay: 2)),
+            accountOrg: nil
+        )
+        _ = try await noAccountOrg.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
+    }
+
+    func testSnapshotMissingAWindowThatTheCacheStillHoldsFallsBackToAPI() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(nil)
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+
+        // The API reports a live 5h window...
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 17), statusCode: 200)
+        _ = try await provider.fetchUsage()
+
+        // ...so a snapshot without five_hour would mix sources; use the API instead.
+        clock.advance(by: 60)
+        box.value = Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: nil, sevenDay: 20)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 21), statusCode: 200)
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
+        XCTAssertEqual(usage.weeklyUsage?.used, 21)
+        XCTAssertEqual(usage.fiveHourUsage.used, 100)
+    }
+
+    func testSnapshotMissingAWindowWithNoLiveCacheShowsZeroForIt() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: nil, sevenDay: 20))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+        XCTAssertEqual(usage.fiveHourUsage.used, 0)
+        XCTAssertNil(usage.fiveHourUsage.resetTime)
+        XCTAssertEqual(usage.weeklyUsage?.used, 20)
+    }
+
+    func testTwoAccountsWithSimultaneousSnapshotsStayIndependent() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let second = ClaudeAccount(label: "two", configDir: "/tmp/agentbar-test-claude-2")
+        let snapshots: [UUID: ClaudeStatusLineSnapshot] = [
+            ClaudeAccount.defaultLoginID: Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 10, sevenDay: 11, org: "org-A"),
+            second.id: Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 55, sevenDay: 8, org: "org-B")
+        ]
+        let orgs: [UUID: String] = [ClaudeAccount.defaultLoginID: "org-A", second.id: "org-B"]
+        func provider(_ account: ClaudeAccount) -> ClaudeUsageProvider {
+            ClaudeUsageProvider(
+                session: MockURLProtocol.session(),
+                credentialProvider: { "test-token" },
+                defaults: defaults,
+                account: account,
+                now: { clock.now() },
+                statusLineSnapshot: { snapshots[$0.id] },
+                accountOrganization: { orgs[$0.id] }
+            )
+        }
+
+        let first = try await provider(.defaultLogin).fetchUsage()
+        let other = try await provider(second).fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+        XCTAssertEqual(first.fiveHourUsage.used, 10)
+        XCTAssertEqual(other.fiveHourUsage.used, 55)
+
+        // Each account's cache holds its own values afterwards.
+        clock.advance(by: 120)
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429)
+        let firstStale = try await provider(.defaultLogin).fetchUsage()
+        let otherStale = try await provider(second).fetchUsage()
+        XCTAssertEqual(firstStale.weeklyUsage?.used, 11)
+        XCTAssertEqual(otherStale.weeklyUsage?.used, 8)
+
+        // A session of the second account's org is never used for the first one.
+        let crossed = ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { "test-token" },
+            defaults: makeDefaultsSuite(),
+            account: .defaultLogin,
+            now: { clock.now() },
+            statusLineSnapshot: { _ in snapshots[second.id] },
+            accountOrganization: { _ in "org-A" }
+        )
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 12, sevenDay: 13), statusCode: 200)
+        let crossedUsage = try await crossed.fetchUsage()
+        XCTAssertEqual(crossedUsage.fiveHourUsage.used, 12)
     }
 
     func testIgnoresExtraFields() async throws {
