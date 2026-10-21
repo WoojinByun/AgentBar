@@ -630,6 +630,194 @@ final class ClaudeUsageProviderTests: XCTestCase {
         XCTAssertNil(ClaudeUsageProvider.parseAccessToken(from: "{\"other\":\"field\"}"))
     }
 
+    // MARK: - Stale fallback, 429 backoff, reset detection
+
+    private static let rateLimitedBody = Data(#"{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}"#.utf8)
+
+    private static func usageJSON(fiveHour: Double, sevenDay: Double) -> Data {
+        Data("""
+        {
+            "five_hour": {"utilization": \(fiveHour), "resets_at": "2099-01-01T05:00:00.132413+00:00"},
+            "seven_day": {"utilization": \(sevenDay), "resets_at": "2099-01-03T15:00:00.132435+00:00"}
+        }
+        """.utf8)
+    }
+
+    private func makeClockedProvider(defaults: UserDefaults, clock: TestClock) -> ClaudeUsageProvider {
+        ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { "test-token" },
+            defaults: defaults,
+            now: { clock.now() }
+        )
+    }
+
+    func testRateLimitedFallbackKeepsLastSuccessTimeAndShowsStatus() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 86), statusCode: 200)
+        let fresh = try await provider.fetchUsage()
+        XCTAssertNil(fresh.statusMessage)
+
+        clock.advance(by: 300)
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429, headers: ["retry-after": "0"])
+        let stale = try await provider.fetchUsage()
+
+        XCTAssertEqual(stale.fiveHourUsage.used, 100)
+        XCTAssertEqual(stale.weeklyUsage?.used, 86)
+        XCTAssertEqual(stale.lastUpdated, fresh.lastUpdated)
+        XCTAssertNotNil(stale.statusMessage)
+    }
+
+    func testRateLimitBacksOffExponentiallyAndResetsAfterSuccess() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 10, sevenDay: 20), statusCode: 200)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        // First 429: back off for the base interval; Retry-After 0 is not a usable hint.
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429, headers: ["retry-after": "0"])
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
+
+        clock.advance(by: 30)
+        let skipped = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2, "poll inside the backoff window must not hit the API")
+        XCTAssertEqual(skipped.weeklyUsage?.used, 20)
+        XCTAssertNotNil(skipped.statusMessage)
+
+        // Second consecutive 429 doubles the wait.
+        clock.advance(by: 31)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 3)
+        clock.advance(by: 90)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 3)
+
+        // Success after the window clears the backoff state.
+        clock.advance(by: 31)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 11, sevenDay: 21), statusCode: 200)
+        let recovered = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 4)
+        XCTAssertNil(recovered.statusMessage)
+        XCTAssertEqual(recovered.weeklyUsage?.used, 21)
+
+        // The next 429 starts again from the base interval.
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 5)
+        clock.advance(by: 61)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 6)
+    }
+
+    func testRateLimitHonorsPositiveRetryAfter() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429, headers: ["Retry-After": "300"])
+        do {
+            _ = try await provider.fetchUsage()
+            XCTFail("Should throw without a cache")
+        } catch {}
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        clock.advance(by: 240)
+        do {
+            _ = try await provider.fetchUsage()
+            XCTFail("Should throw without a cache")
+        } catch {}
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        clock.advance(by: 61)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 5, sevenDay: 6), statusCode: 200)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
+    }
+
+    func testRateLimitBackoffIsPerAccountAndSurvivesProviderRebuild() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let other = ClaudeAccount(label: "work", configDir: "/tmp/agentbar-test-claude-work")
+
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429)
+        _ = try? await makeClockedProvider(defaults: defaults, clock: clock).fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        // Providers are rebuilt on settings changes; the backoff must persist.
+        _ = try? await makeClockedProvider(defaults: defaults, clock: clock).fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        let otherProvider = ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { "other-token" },
+            defaults: defaults,
+            account: other,
+            now: { clock.now() }
+        )
+        _ = try? await otherProvider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
+    }
+
+    func testSingleZeroWithUnchangedResetKeepsCachedValue() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 86), statusCode: 200)
+        _ = try await provider.fetchUsage()
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 0, sevenDay: 0), statusCode: 200)
+        let gap = try await provider.fetchUsage()
+        XCTAssertEqual(gap.fiveHourUsage.used, 100)
+        XCTAssertEqual(gap.weeklyUsage?.used, 86)
+
+        // An isolated zero followed by real usage leaves no pending reset behind.
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 86), statusCode: 200)
+        _ = try await provider.fetchUsage()
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 0, sevenDay: 0), statusCode: 200)
+        let secondGap = try await provider.fetchUsage()
+        XCTAssertEqual(secondGap.weeklyUsage?.used, 86)
+    }
+
+    func testTwoConsecutiveZerosWithUnchangedResetAreAcceptedAsReset() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 86), statusCode: 200)
+        _ = try await provider.fetchUsage()
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 0, sevenDay: 0), statusCode: 200)
+        _ = try await provider.fetchUsage()
+        clock.advance(by: 30)
+        let reset = try await makeClockedProvider(defaults: defaults, clock: clock).fetchUsage()
+
+        XCTAssertEqual(reset.fiveHourUsage.used, 0)
+        XCTAssertEqual(reset.weeklyUsage?.used, 0)
+        XCTAssertNotNil(reset.weeklyUsage?.resetTime)
+    }
+
+    func testNonZeroDropWithUnchangedResetIsAcceptedImmediately() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let provider = makeClockedProvider(defaults: defaults, clock: clock)
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 100, sevenDay: 86), statusCode: 200)
+        _ = try await provider.fetchUsage()
+
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 41, sevenDay: 7), statusCode: 200)
+        let dropped = try await provider.fetchUsage()
+        XCTAssertEqual(dropped.fiveHourUsage.used, 41)
+        XCTAssertEqual(dropped.weeklyUsage?.used, 7)
+    }
+
     func testIgnoresExtraFields() async throws {
         let defaults = makeDefaultsSuite()
         let json = """
@@ -663,17 +851,22 @@ final class ClaudeUsageProviderTests: XCTestCase {
 private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var stubData: Data = Data()
     nonisolated(unsafe) static var stubStatusCode: Int = 200
+    nonisolated(unsafe) static var stubHeaders: [String: String]?
     nonisolated(unsafe) static var onRequest: ((URLRequest) -> Void)?
+    nonisolated(unsafe) static var requestCount = 0
 
     static func reset() {
         stubData = Data()
         stubStatusCode = 200
+        stubHeaders = nil
         onRequest = nil
+        requestCount = 0
     }
 
-    static func stubResponse(data: Data, statusCode: Int) {
+    static func stubResponse(data: Data, statusCode: Int, headers: [String: String]? = nil) {
         stubData = data
         stubStatusCode = statusCode
+        stubHeaders = headers
     }
 
     static func session() -> URLSession {
@@ -686,13 +879,14 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        MockURLProtocol.requestCount += 1
         MockURLProtocol.onRequest?(request)
 
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: MockURLProtocol.stubStatusCode,
             httpVersion: nil,
-            headerFields: nil
+            headerFields: MockURLProtocol.stubHeaders
         )!
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -701,6 +895,25 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date) { current = start }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        current += interval
+        lock.unlock()
+    }
 }
 
 private final class CLICounterBox: @unchecked Sendable {

@@ -2,6 +2,14 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 101: Claude 사용량 초기화 반영 지연과 429 처리 수정
+
+- **오래된 캐시 표시**: 조회가 실패해 캐시를 반환할 때 `lastUpdated`에 현재 시각 대신 마지막 성공 시각(`claudeUsageCache[.<id>].savedAt`)을 넣고, `statusMessage`로 `Rate limited — showing last known usage` 또는 `Update failed — showing last known usage`를 표시합니다. 팝업은 기존 Codex 경로대로 `Last success:` 시각을 함께 보여줍니다. 메뉴 막대에서 사라지지 않도록 `isAvailable`은 true로 유지합니다.
+- **429 백오프**: HTTP 429를 받으면 양수 `Retry-After`(초, 최대 1시간)를 따르고, 없거나 0이면 60초부터 두 배씩 최대 15분까지 요청을 건너뜁니다. 실제 API는 `retry-after: 0`을 보내 30초 주기 조회가 계속 제한에 걸렸습니다. 상태(`rateLimitedUntil`, `rateLimitStreak`)는 계정별 UserDefaults 키에 저장해 제공자를 다시 만들어도 유지하고, 성공하면 초기화합니다.
+- **사용량 초기화 감지**: 사용량 초기화는 `resets_at`을 그대로 둔 채 사용률만 낮춥니다. 같은 초기화 시각의 0%를 일시적 API 공백으로만 보던 휴리스틱 때문에 실제 초기화가 무시되었습니다. 이제 같은 초기화 시각의 0%가 두 번 연속 관측되면(`<cacheKey>.pendingZero`) 받아들이고, 한 번만 나온 0%는 기존처럼 캐시를 유지합니다.
+- `ClaudeUsageProvider`에 테스트용 `now` 시계 주입을 추가했습니다.
+- 테스트 323개 모두 통과(기본 플랜 305개 + 기본 플랜에서 제외된 소켓·훅 테스트 3개 클래스 18개를 `-only-testing`으로 별도 실행. 자동 생성 스킴에 `AgentBarFull` 플랜이 연결되어 있지 않아 `-testPlan AgentBarFull`은 실행되지 않음)
+
 ## 개발 기록 100: 팝업 바깥 클릭 닫기, 서비스별 색 지정, Claude 다중 계정, 막대 테두리
 
 - **팝업 닫기**: 메뉴 막대 앱(accessory)은 아이콘을 눌러도 활성화되지 않아 `.transient` 팝업이 바깥 클릭을 감지하지 못했습니다. `PopoverController`가 팝업을 열 때 앱을 활성화하고, 다른 앱 클릭을 받는 전역 마우스 모니터와 `NSApplication.didResignActiveNotification` 관찰자로 팝업을 닫습니다. 교체된 팝업의 닫힘 알림은 무시합니다.

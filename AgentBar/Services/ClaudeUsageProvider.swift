@@ -172,12 +172,18 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     private let session: URLSession
     private let credentialProvider: @Sendable () -> String?
     private let defaults: UserDefaults
+    private let now: @Sendable () -> Date
 
     static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
     private static let tokenCacheLock = NSLock()
     private static let defaultCacheTTL: TimeInterval = 60
     private static let securityCLITimeout: TimeInterval = 2
+    /// 429 backoff: doubles per consecutive 429 up to the cap. The endpoint sends
+    /// `retry-after: 0`, so without this every poll would hit the limit again.
+    private static let rateLimitBaseBackoff: TimeInterval = 60
+    private static let rateLimitMaxBackoff: TimeInterval = 15 * 60
+    private static let retryAfterMax: TimeInterval = 60 * 60
     nonisolated(unsafe) private static var tokenCache: [String: (token: String?, lookedUpAt: Date)] = [:]
     typealias SecurityCLIProcessRuntime = CLIProcessRuntime
     nonisolated(unsafe) static var securityCLIRunner: @Sendable (_ service: String, _ timeout: TimeInterval) -> String? = {
@@ -190,13 +196,15 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         credentialProvider: (@Sendable () -> String?)? = nil,
         defaults: UserDefaults = .standard,
         account: ClaudeAccount = .defaultLogin,
-        accountIndex: Int? = nil
+        accountIndex: Int? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.session = session
         self.credentialProvider = credentialProvider ?? { Self.readToken(for: account) }
         self.defaults = defaults
         self.account = account
         self.accountIndex = accountIndex
+        self.now = now
     }
 
     /// Shown only when several accounts are configured or the user named this one.
@@ -219,6 +227,12 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             return try cachedOrThrow(APIError.unauthorized)
         }
 
+        // Persisted per account so a provider rebuild doesn't skip the backoff.
+        if let until = defaults.object(forKey: cacheKey("rateLimitedUntil")) as? Double,
+           now().timeIntervalSince1970 < until {
+            return try cachedOrThrow(APIError.rateLimited)
+        }
+
         var request = URLRequest(url: Self.usageURL, timeoutInterval: 10)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
@@ -231,11 +245,19 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
                 return try cachedOrThrow(APIError.invalidResponse)
             }
 
+            if httpResponse.statusCode == 429 {
+                recordRateLimit(retryAfter: httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                return try cachedOrThrow(APIError.rateLimited)
+            }
+
             guard (200...299).contains(httpResponse.statusCode) else {
                 let error: APIError = httpResponse.statusCode == 401
                     ? .unauthorized : .httpError(httpResponse.statusCode)
                 return try cachedOrThrow(error)
             }
+
+            clearRateLimit()
+            defaults.set(now().timeIntervalSince1970, forKey: cacheKey("savedAt"))
 
             usageResponse = (try? JSONDecoder().decode(ClaudeUsageResponse.self, from: data))
                 ?? ClaudeUsageResponse()
@@ -259,7 +281,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             service: .claude,
             fiveHourUsage: fiveHour,
             weeklyUsage: sevenDay,
-            lastUpdated: Date(),
+            lastUpdated: now(),
             isAvailable: true,
             planName: planName,
             accountLabel: accountLabel,
@@ -269,9 +291,10 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
 
     /// Returns cached usage data when available, otherwise re-throws the original error.
     /// This preserves valid 7d values when the API fails (e.g. token expiry overnight)
-    /// but the 7d reset window hasn't passed yet.
+    /// but the 7d reset window hasn't passed yet. The result stays available so the
+    /// menu bar keeps it, but carries the last success time and a stale notice.
     private func cachedOrThrow(_ error: Error) throws -> UsageData {
-        let now = Date()
+        let now = self.now()
         let fiveHour = validCachedMetric(forKey: cacheKey("fiveHour"), now: now)
         let sevenDay = validCachedMetric(forKey: cacheKey("sevenDay"), now: now)
 
@@ -281,16 +304,46 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         let planName = (defaults.string(forKey: "claudePlan")
             .flatMap { ClaudePlan(rawValue: $0) } ?? .pro).rawValue
 
+        let savedAt = (defaults.object(forKey: cacheKey("savedAt")) as? Double)
+            .map { Date(timeIntervalSince1970: $0) }
+        let isRateLimited: Bool
+        if case APIError.rateLimited = error { isRateLimited = true } else { isRateLimited = false }
+
         return UsageData(
             service: .claude,
             fiveHourUsage: fiveHour ?? zeroPercent,
             weeklyUsage: sevenDay ?? zeroPercent,
-            lastUpdated: Date(),
+            lastUpdated: savedAt ?? now,
             isAvailable: true,
             planName: planName,
+            statusMessage: isRateLimited
+                ? "Rate limited — showing last known usage"
+                : "Update failed — showing last known usage",
             accountLabel: accountLabel,
             accountIndex: accountIndex
         )
+    }
+
+    /// Honors a positive `Retry-After` (seconds); otherwise backs off exponentially.
+    private func recordRateLimit(retryAfter: String?) {
+        let streakKey = cacheKey("rateLimitStreak")
+        let streak = defaults.integer(forKey: streakKey) + 1
+        defaults.set(streak, forKey: streakKey)
+
+        let delay: TimeInterval
+        if let seconds = retryAfter.flatMap({ TimeInterval($0.trimmingCharacters(in: .whitespaces)) }),
+           seconds > 0 {
+            delay = min(seconds, Self.retryAfterMax)
+        } else {
+            let exponent = Double(min(streak - 1, 10))
+            delay = min(Self.rateLimitBaseBackoff * pow(2, exponent), Self.rateLimitMaxBackoff)
+        }
+        defaults.set(now().addingTimeInterval(delay).timeIntervalSince1970, forKey: cacheKey("rateLimitedUntil"))
+    }
+
+    private func clearRateLimit() {
+        defaults.removeObject(forKey: cacheKey("rateLimitStreak"))
+        defaults.removeObject(forKey: cacheKey("rateLimitedUntil"))
     }
 
     /// The default login keeps the original keys so existing caches survive.
@@ -307,7 +360,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             service: .claude,
             fiveHourUsage: zeroPercent,
             weeklyUsage: nil,
-            lastUpdated: Date(),
+            lastUpdated: now(),
             isAvailable: true,
             showsFiveHourUsage: false,
             statusMessage: "Not signed in. Run: CLAUDE_CONFIG_DIR=\(shortDir) claude",
@@ -317,7 +370,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
     }
 
     private func resolveMetric(window: ClaudeUsageWindow?, cacheKey: String) -> UsageMetric {
-        let now = Date()
+        let now = self.now()
         let cached = validCachedMetric(forKey: cacheKey, now: now)
 
         guard let window else {
@@ -331,10 +384,18 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
             resetTime: window.resets_at.flatMap { DateUtils.parseISO8601($0) }
         )
 
-        if shouldPreferCachedMetric(cached, over: incoming, now: now) {
-            return cached!
+        let pendingZeroKey = "\(cacheKey).pendingZero"
+        if let cached, shouldPreferCachedMetric(cached, over: incoming, now: now) {
+            // A usage reset pass drops to 0 without moving the boundary, so a zero
+            // seen on two consecutive polls is accepted; a single one is a gap.
+            guard incoming.resetTime != nil else { return cached }
+            guard defaults.bool(forKey: pendingZeroKey) else {
+                defaults.set(true, forKey: pendingZeroKey)
+                return cached
+            }
         }
 
+        defaults.removeObject(forKey: pendingZeroKey)
         saveMetricCache(incoming, forKey: cacheKey)
         return incoming
     }
@@ -399,6 +460,7 @@ final class ClaudeUsageProvider: UsageProviderProtocol, @unchecked Sendable {
         defaults.removeObject(forKey: "\(key).used")
         defaults.removeObject(forKey: "\(key).total")
         defaults.removeObject(forKey: "\(key).resetTime")
+        defaults.removeObject(forKey: "\(key).pendingZero")
     }
 
     // MARK: - Keychain Access via security CLI
