@@ -156,10 +156,12 @@ final class UsageViewModel: ObservableObject {
 
         if isEnabled("claudeEnabled", in: defaults) {
             let accounts = ClaudeAccountStore.load(defaults: defaults)
+            let statusLineStore = ClaudeStatusLineSnapshotStore()
             for (index, account) in accounts.enumerated() {
                 providers.append(ClaudeUsageProvider(
                     account: account,
-                    accountIndex: accounts.count > 1 ? index : nil
+                    accountIndex: accounts.count > 1 ? index : nil,
+                    statusLineSnapshot: { statusLineStore.latestSnapshot(for: $0) }
                 ))
             }
         }

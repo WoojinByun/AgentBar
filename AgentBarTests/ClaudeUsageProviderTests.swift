@@ -818,6 +818,179 @@ final class ClaudeUsageProviderTests: XCTestCase {
         XCTAssertEqual(dropped.weeklyUsage?.used, 7)
     }
 
+    // MARK: - Statusline snapshots
+
+    private static let statusLineNow = Date(timeIntervalSince1970: 2_000_000_000)
+
+    private static func statusLineSnapshot(
+        receivedAt: Date,
+        fiveHour: Double?,
+        sevenDay: Double?,
+        sessionID: String? = "session-1",
+        apiDurationMs: Double? = nil
+    ) -> ClaudeStatusLineSnapshot {
+        ClaudeStatusLineSnapshot(
+            receivedAt: receivedAt,
+            configDir: nil,
+            fiveHour: fiveHour.map {
+                ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: Date(timeIntervalSince1970: 4_070_926_800))
+            },
+            sevenDay: sevenDay.map {
+                ClaudeStatusLineWindow(usedPercentage: $0, resetsAt: Date(timeIntervalSince1970: 4_071_085_200))
+            },
+            sessionID: sessionID,
+            apiDurationMs: apiDurationMs ?? receivedAt.timeIntervalSince1970
+        )
+    }
+
+    private func makeStatusLineProvider(
+        defaults: UserDefaults,
+        clock: TestClock,
+        snapshot: SnapshotBox
+    ) -> ClaudeUsageProvider {
+        ClaudeUsageProvider(
+            session: MockURLProtocol.session(),
+            credentialProvider: { "test-token" },
+            defaults: defaults,
+            now: { clock.now() },
+            statusLineSnapshot: { _ in snapshot.value }
+        )
+    }
+
+    func testFreshStatusLineSnapshotSkipsUsageAPI() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(
+            receivedAt: Self.statusLineNow.addingTimeInterval(-59), fiveHour: 33.3, sevenDay: 12
+        ))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 90, sevenDay: 90), statusCode: 200)
+
+        let usage = try await provider.fetchUsage()
+
+        XCTAssertEqual(MockURLProtocol.requestCount, 0, "a fresh statusline snapshot must not hit the API")
+        XCTAssertEqual(usage.fiveHourUsage.used, 33.3)
+        XCTAssertEqual(usage.fiveHourUsage.unit, .percent)
+        XCTAssertEqual(usage.fiveHourUsage.resetTime, Date(timeIntervalSince1970: 4_070_926_800))
+        XCTAssertEqual(usage.weeklyUsage?.used, 12)
+        XCTAssertNil(usage.statusMessage)
+        XCTAssertTrue(usage.isAvailable)
+    }
+
+    func testStaleStatusLineSnapshotFallsBackToUsageAPI() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(
+            receivedAt: Self.statusLineNow.addingTimeInterval(-61), fiveHour: 33, sevenDay: 12
+        ))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 44, sevenDay: 55), statusCode: 200)
+
+        let usage = try await provider.fetchUsage()
+
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(usage.fiveHourUsage.used, 44)
+        XCTAssertEqual(usage.weeklyUsage?.used, 55)
+    }
+
+    func testMissingStatusLineSnapshotFallsBackToUsageAPI() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: SnapshotBox(nil))
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 44, sevenDay: 55), statusCode: 200)
+
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+    }
+
+    func testStatusLineDropToZeroIsAcceptedImmediately() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(
+            receivedAt: Self.statusLineNow.addingTimeInterval(-5), fiveHour: 100, sevenDay: 86
+        ))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+
+        _ = try await provider.fetchUsage()
+        clock.advance(by: 60)
+        box.value = Self.statusLineSnapshot(receivedAt: clock.now().addingTimeInterval(-5), fiveHour: 0, sevenDay: 0)
+        let reset = try await provider.fetchUsage()
+
+        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+        XCTAssertEqual(reset.fiveHourUsage.used, 0)
+        XCTAssertEqual(reset.weeklyUsage?.used, 0)
+    }
+
+    func testStatusLineRefreshesCacheForLaterAPIFallback() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let snapshotTime = Self.statusLineNow.addingTimeInterval(-10)
+        let box = SnapshotBox(Self.statusLineSnapshot(receivedAt: snapshotTime, fiveHour: 61, sevenDay: 23))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+        _ = try await provider.fetchUsage()
+
+        // The snapshot ages out and the API is rate limited: the stale notice must
+        // show the statusline values and the statusline observation time.
+        clock.advance(by: 120)
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429, headers: ["retry-after": "0"])
+        let stale = try await provider.fetchUsage()
+
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(stale.fiveHourUsage.used, 61)
+        XCTAssertEqual(stale.weeklyUsage?.used, 23)
+        XCTAssertEqual(stale.lastUpdated, snapshotTime)
+        XCTAssertNotNil(stale.statusMessage)
+    }
+
+    func testStatusLineSnapshotIsUsedEvenDuringAPIBackoff() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(nil)
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+
+        MockURLProtocol.stubResponse(data: Self.rateLimitedBody, statusCode: 429, headers: ["retry-after": "0"])
+        _ = try? await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+
+        clock.advance(by: 10)
+        box.value = Self.statusLineSnapshot(receivedAt: clock.now(), fiveHour: 5, sevenDay: 6)
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(usage.fiveHourUsage.used, 5)
+        XCTAssertNil(usage.statusMessage)
+    }
+
+    func testIdleRerenderOfOldStatusLineDataIsNotTreatedAsFresh() async throws {
+        let defaults = makeDefaultsSuite()
+        let clock = TestClock(Self.statusLineNow)
+        let box = SnapshotBox(Self.statusLineSnapshot(
+            receivedAt: clock.now(), fiveHour: 20, sevenDay: 30, sessionID: "idle", apiDurationMs: 5_000
+        ))
+        let provider = makeStatusLineProvider(defaults: defaults, clock: clock, snapshot: box)
+        _ = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 0)
+
+        // Five minutes later the same session re-renders its statusline without a
+        // new API response (same total_api_duration_ms): the data is still old.
+        clock.advance(by: 300)
+        box.value = Self.statusLineSnapshot(
+            receivedAt: clock.now(), fiveHour: 20, sevenDay: 30, sessionID: "idle", apiDurationMs: 5_000
+        )
+        MockURLProtocol.stubResponse(data: Self.usageJSON(fiveHour: 25, sevenDay: 31), statusCode: 200)
+        let usage = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(usage.fiveHourUsage.used, 25)
+
+        // A new API response in that session makes it fresh again.
+        clock.advance(by: 60)
+        box.value = Self.statusLineSnapshot(
+            receivedAt: clock.now(), fiveHour: 26, sevenDay: 31, sessionID: "idle", apiDurationMs: 6_000
+        )
+        let fresh = try await provider.fetchUsage()
+        XCTAssertEqual(MockURLProtocol.requestCount, 1)
+        XCTAssertEqual(fresh.fiveHourUsage.used, 26)
+    }
+
     func testIgnoresExtraFields() async throws {
         let defaults = makeDefaultsSuite()
         let json = """
@@ -895,6 +1068,18 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class SnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: ClaudeStatusLineSnapshot?
+
+    init(_ value: ClaudeStatusLineSnapshot?) { current = value }
+
+    var value: ClaudeStatusLineSnapshot? {
+        get { lock.lock(); defer { lock.unlock() }; return current }
+        set { lock.lock(); current = newValue; lock.unlock() }
+    }
 }
 
 private final class TestClock: @unchecked Sendable {

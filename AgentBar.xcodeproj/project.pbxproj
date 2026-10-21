@@ -23,13 +23,16 @@
 		2CE47C94D79C1811FC55FBC7 /* CESPRegistryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC7AEC81578ED1FF03C231A5 /* CESPRegistryService.swift */; };
 		2DC522146728304F3839E9C6 /* CESPRegistryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25F0B4399CDDB5DC57F7874 /* CESPRegistryServiceTests.swift */; };
 		35B32C5044F29686750F36E8 /* AgentHookConfigurationChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6097B9B3E012839E15FF7E0A /* AgentHookConfigurationChecker.swift */; };
+		AA11000000000000000000B2 /* ClaudeStatusLineInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11000000000000000000A2 /* ClaudeStatusLineInstaller.swift */; };
 		3761D447CE922B92BC1E820C /* JSONLParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B96865FEB478446EB8EBD2A /* JSONLParserTests.swift */; };
 		38CE09D9014E986F75D0B8AA /* DateUtilsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04C1E41FDB05FE948BD0482C /* DateUtilsTests.swift */; };
 		39C1DDDCF77B0F2D0438C588 /* AgentNotifySettingsMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81EE4A4776CC18CCAA8A5E38 /* AgentNotifySettingsMigrationTests.swift */; };
 		3B71B41FB07369356167BA8F /* ClaudeUsageProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B7EEA37A7EFFF2C3A0B4A1B /* ClaudeUsageProvider.swift */; };
+		AA11000000000000000000B1 /* ClaudeStatusLineSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11000000000000000000A1 /* ClaudeStatusLineSnapshot.swift */; };
 		3DC8AC0C7189CC2E326C6EB3 /* CursorUsageProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8CE2D6F4A6ABDA2B44C2DEB /* CursorUsageProvider.swift */; };
 		3EB7983C4CE520C1C2470EC1 /* NotifySoundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CACABC16CB1546B3A6BE16C /* NotifySoundManager.swift */; };
 		3EE38AF1E8FFB7BF1329041C /* ClaudeUsageProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C6571F420208CAEE28D0D6C /* ClaudeUsageProviderTests.swift */; };
+		AA11000000000000000000B3 /* ClaudeStatusLineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11000000000000000000A3 /* ClaudeStatusLineTests.swift */; };
 		522555AED1FB1419AA6E574B /* ClaudeHookNotifyEventDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E8FE4C68C3CE713FD06DB8 /* ClaudeHookNotifyEventDetectorTests.swift */; };
 		52F84DDD177A2422B54BF7F0 /* CursorUsageProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AC6B625FC95A01761E9033B /* CursorUsageProviderTests.swift */; };
 		533357367AE4447BE2722CA3 /* AgentNotifyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FBF196EA50B4AC289CA4175 /* AgentNotifyMonitor.swift */; };
@@ -115,14 +118,17 @@
 		48FC8B202CA33D689860FAE5 /* NotifySoundManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotifySoundManagerTests.swift; sourceTree = "<group>"; };
 		4B96865FEB478446EB8EBD2A /* JSONLParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONLParserTests.swift; sourceTree = "<group>"; };
 		4C6571F420208CAEE28D0D6C /* ClaudeUsageProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeUsageProviderTests.swift; sourceTree = "<group>"; };
+		AA11000000000000000000A3 /* ClaudeStatusLineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStatusLineTests.swift; sourceTree = "<group>"; };
 		503AF2725E4D2D61654E9633 /* PopoverController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverController.swift; sourceTree = "<group>"; };
 		50C4B04E2D4C1BA29F06BBE4 /* CESPPackDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CESPPackDownloadService.swift; sourceTree = "<group>"; };
 		51A9C106D44822F4072ED37B /* CESPPackDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CESPPackDownloadServiceTests.swift; sourceTree = "<group>"; };
 		55A8959B82D8511470A7DBFC /* AgentNotifyEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentNotifyEvent.swift; sourceTree = "<group>"; };
 		5AF9840FACAD2645C86D775B /* UsageData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageData.swift; sourceTree = "<group>"; };
 		5B7EEA37A7EFFF2C3A0B4A1B /* ClaudeUsageProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeUsageProvider.swift; sourceTree = "<group>"; };
+		AA11000000000000000000A1 /* ClaudeStatusLineSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStatusLineSnapshot.swift; sourceTree = "<group>"; };
 		5D5E3DC0E6D1633377C0B57D /* NotifySocketListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotifySocketListener.swift; sourceTree = "<group>"; };
 		6097B9B3E012839E15FF7E0A /* AgentHookConfigurationChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookConfigurationChecker.swift; sourceTree = "<group>"; };
+		AA11000000000000000000A2 /* ClaudeStatusLineInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStatusLineInstaller.swift; sourceTree = "<group>"; };
 		6992AA8505D71EC3A51E135A /* GeminiUsageProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiUsageProvider.swift; sourceTree = "<group>"; };
 		6B5358DCB78A72A34C806A41 /* UsageHistoryViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryViewModelTests.swift; sourceTree = "<group>"; };
 		6C5EA30148527620F8F736B8 /* UsageProviderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageProviderProtocol.swift; sourceTree = "<group>"; };
@@ -249,6 +255,7 @@
 				FC7AEC81578ED1FF03C231A5 /* CESPRegistryService.swift */,
 				BF522722A2C522DD00B92DC4 /* ClaudeHookNotifyEventDetector.swift */,
 				5B7EEA37A7EFFF2C3A0B4A1B /* ClaudeUsageProvider.swift */,
+				AA11000000000000000000A1 /* ClaudeStatusLineSnapshot.swift */,
 				AE3ED42D28F4B85660CCC365 /* CodexNotifyEventDetector.swift */,
 				DE6153FAE83E41E3CB6D7906 /* CodexUsageProvider.swift */,
 				9AEF729EA116BEFCD2ACFBBB /* CopilotUsageProvider.swift */,
@@ -358,6 +365,7 @@
 			isa = PBXGroup;
 			children = (
 				6097B9B3E012839E15FF7E0A /* AgentHookConfigurationChecker.swift */,
+				AA11000000000000000000A2 /* ClaudeStatusLineInstaller.swift */,
 				7FBF196EA50B4AC289CA4175 /* AgentNotifyMonitor.swift */,
 				7F48F25460C2DC5C7773C63D /* AgentNotifyNotificationService.swift */,
 				BE9AEDC7AABDFEDA82EEFAFE /* AgentNotifySettingsMigrator.swift */,
@@ -380,6 +388,7 @@
 				F25F0B4399CDDB5DC57F7874 /* CESPRegistryServiceTests.swift */,
 				F5E8FE4C68C3CE713FD06DB8 /* ClaudeHookNotifyEventDetectorTests.swift */,
 				4C6571F420208CAEE28D0D6C /* ClaudeUsageProviderTests.swift */,
+				AA11000000000000000000A3 /* ClaudeStatusLineTests.swift */,
 				20A6ABE351ED25CC0D1A595D /* CodexNotifyEventDetectorTests.swift */,
 				AC18E21D095D18251F7E9DBB /* CodexUsageProviderTests.swift */,
 				A0A93A21D3C3B9F178B46F77 /* CopilotUsageProviderTests.swift */,
@@ -526,6 +535,7 @@
 				2DC522146728304F3839E9C6 /* CESPRegistryServiceTests.swift in Sources */,
 				522555AED1FB1419AA6E574B /* ClaudeHookNotifyEventDetectorTests.swift in Sources */,
 				3EE38AF1E8FFB7BF1329041C /* ClaudeUsageProviderTests.swift in Sources */,
+				AA11000000000000000000B3 /* ClaudeStatusLineTests.swift in Sources */,
 				FCE5028EE8EE278731C8DA7E /* CodexNotifyEventDetectorTests.swift in Sources */,
 				F1AD3836030930D7C0009875 /* CodexUsageProviderTests.swift in Sources */,
 				B8E80F1E142B0D7458A44A4E /* CopilotUsageProviderTests.swift in Sources */,
@@ -558,6 +568,7 @@
 				5587C14E35D8C542CA8606B5 /* APIError.swift in Sources */,
 				B76250CE8900A1026B63AB92 /* AgentBarApp.swift in Sources */,
 				35B32C5044F29686750F36E8 /* AgentHookConfigurationChecker.swift in Sources */,
+				AA11000000000000000000B2 /* ClaudeStatusLineInstaller.swift in Sources */,
 				B6914F1BDBD0282CF2FBA0E3 /* AgentNotifyEvent.swift in Sources */,
 				02C36CF564D6D60CD07E560A /* AgentNotifyEventDetectorProtocol.swift in Sources */,
 				533357367AE4447BE2722CA3 /* AgentNotifyMonitor.swift in Sources */,
@@ -569,6 +580,7 @@
 				2CE47C94D79C1811FC55FBC7 /* CESPRegistryService.swift in Sources */,
 				53B73069DACD3549EF96640D /* ClaudeHookNotifyEventDetector.swift in Sources */,
 				3B71B41FB07369356167BA8F /* ClaudeUsageProvider.swift in Sources */,
+				AA11000000000000000000B1 /* ClaudeStatusLineSnapshot.swift in Sources */,
 				8D605A7D5A16AE0686002B22 /* CodexNotifyEventDetector.swift in Sources */,
 				0DC20BA6DAA4B12BD92BC7B1 /* CodexUsageProvider.swift in Sources */,
 				9FA537772F4F3CC5B45A746E /* CopilotUsageProvider.swift in Sources */,

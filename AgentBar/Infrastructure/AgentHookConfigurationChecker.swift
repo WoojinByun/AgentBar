@@ -8,6 +8,7 @@ struct AgentHookSourceStatus: Equatable {
 struct AgentHookConfigurationStatus: Equatable {
     let codex: AgentHookSourceStatus
     let claude: AgentHookSourceStatus
+    var claudeStatusLine = AgentHookSourceStatus(isConfigured: false, detail: "Not checked yet.")
     let checkedAt: Date
 
     static let unknown = AgentHookConfigurationStatus(
@@ -27,11 +28,15 @@ struct AgentHookConfigurationChecker {
     private let fileManager: FileManager
     private let codexConfigURL: URL
     private let claudeConfigURLs: [URL]
+    private let statusLineInstaller: ClaudeStatusLineInstaller?
+    private let claudeAccounts: [ClaudeAccount]?
 
     init(
         fileManager: FileManager = .default,
         codexConfigURL: URL? = nil,
-        claudeConfigURLs: [URL]? = nil
+        claudeConfigURLs: [URL]? = nil,
+        statusLineInstaller: ClaudeStatusLineInstaller? = ClaudeStatusLineInstaller(),
+        claudeAccounts: [ClaudeAccount]? = nil
     ) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.fileManager = fileManager
@@ -40,13 +45,42 @@ struct AgentHookConfigurationChecker {
             home.appendingPathComponent(".claude/settings.json"),
             home.appendingPathComponent(".claude/hooks/config.json")
         ]
+        self.statusLineInstaller = statusLineInstaller
+        self.claudeAccounts = claudeAccounts
     }
 
     func check(now: Date = Date()) -> AgentHookConfigurationStatus {
         AgentHookConfigurationStatus(
             codex: checkCodexConfig(),
             claude: checkClaudeConfig(),
+            claudeStatusLine: checkClaudeStatusLine(),
             checkedAt: now
+        )
+    }
+
+    /// Reports AgentBar's statusline wrapper per configured Claude account,
+    /// including when another tool (e.g. Orca) replaced it.
+    private func checkClaudeStatusLine() -> AgentHookSourceStatus {
+        guard let installer = statusLineInstaller else {
+            return AgentHookSourceStatus(isConfigured: false, detail: "Not checked.")
+        }
+        let accounts = claudeAccounts ?? ClaudeAccountStore.load()
+        let states = accounts.map { account -> (String, ClaudeStatusLineInstaller.State) in
+            let name = account.resolvedConfigDir.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~/.claude"
+            return (name, installer.state(configDir: account.resolvedConfigDir))
+        }
+        let detail = states.map { name, state in
+            switch state {
+            case .installed: return "\(name): installed"
+            case .notInstalled: return "\(name): not installed"
+            case .replaced: return "\(name): replaced by another statusLine command, install again"
+            case .wrapperMissing: return "\(name): wrapper script missing, install again"
+            case .settingsUnreadable: return "\(name): settings.json unreadable"
+            }
+        }.joined(separator: "; ")
+        return AgentHookSourceStatus(
+            isConfigured: !states.isEmpty && states.allSatisfy { $0.1 == .installed },
+            detail: detail
         )
     }
 

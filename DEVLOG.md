@@ -2,6 +2,18 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 103: Claude Code statusline의 rate_limits를 사용량 1순위 출처로 사용
+
+- **배경**: `/api/oauth/usage`가 같은 토큰으로 폴링하는 Orca 때문에 `retry-after: 0`인 429를 자주 반환해, 캐시 값에 머물고 사용량 초기화도 놓쳤습니다. Claude Code는 statusline 명령에 API 응답 헤더에서 얻은 `rate_limits`를 넘깁니다(2.1.306 바이너리 내장 문서: `five_hour`/`seven_day`의 `used_percentage` 0–100, `resets_at` Unix epoch 초. `used_percentage = min(round(utilization*1000)/10, 100)`). 추가 API 호출 없이 얻을 수 있습니다.
+- **스냅숏 우선 조회**: `ClaudeUsageProvider.fetchUsage()`가 먼저 `statusLineSnapshot`(계정별 최신 `ClaudeStatusLineSnapshot`)을 확인하고, 관측 시각이 60초(`statusLineMaxAge`) 이내면 API를 호출하지 않습니다. statusline 값은 그대로 받아들이므로 0으로 떨어져도 즉시 반영하고(두 번 연속 0 규칙은 API 데이터에만 적용), 같은 캐시 키(`fiveHour`/`sevenDay`, `savedAt`)를 갱신해 이후 API 실패 시 오래된 값 안내가 일관됩니다. 오래됐거나 없으면 기존 API 경로(캐시·429 백오프·두 번 연속 0)로 돌아갑니다. 429 백오프 중에도 스냅숏은 사용합니다.
+- **유휴 세션 재렌더링 대응**: Claude Code는 권한 모드 변경, 프롬프트 캐시 만료 타이머 등으로 API 호출 없이 statusline을 다시 실행합니다. `session_id`와 `cost.total_api_duration_ms`가 이전과 같으면 처음 본 시각을 관측 시각으로 써서(`<cacheKey>.statusLineMarkers`, 24시간 보존) 오래된 값을 최신으로 오인하지 않습니다.
+- **전송 방식**: 래퍼가 payload를 `~/Library/Application Support/AgentBar/claude-statusline/snapshots/<키>.json`에 `{"version":1,"received_at":…,"config_dir":…,"payload":…}` 형태로 원자적으로(tmp + mv) 씁니다. AgentBar가 꺼져 있어도 동작하고 조회 시점 규칙과 맞아 소켓(`NotifySocketListener`) 대신 파일을 택했습니다. `ClaudeStatusLineSnapshotStore`는 파일 이름이 아니라 내용의 `config_dir`로 계정을 찾습니다. 빈 값은 기본 로그인, 나머지는 `ClaudeAccount.resolvedConfigDir`와 같은 정규화(물결표 확장, 표준화, 끝 슬래시 무시)로 비교합니다.
+- **래퍼와 설치**: `ClaudeStatusLineInstaller`가 POSIX sh 래퍼(`statusline-wrapper.sh`, jq 없음)를 쓰고 `statusLine.command`를 `/bin/sh '<래퍼>' '<originals/<키>.cmd>'`로 바꿉니다. 래퍼는 stdin을 그대로 원래 명령에 넘기고 stdout과 종료 코드를 유지합니다. 쓰기 전 `~/.agentbar/backups/<UTC 시각>/`에 백업하고, 원래 `statusLine` 객체는 `originals/<키>.json`에 저장해 `uninstall`이 복원합니다. 설정 Notifications 탭 `Agent Sources`에 `Claude statusline usage feed` 상태 행과 `Install statusline feed`/`Remove` 버튼을 추가했습니다(직접 눌러야 설치되는 opt-in).
+- **Orca 덮어쓰기**: Orca(`hook-service`)는 명령에 `agent-hooks/claude-statusline.sh`가 들어 있으면 자기 것(`managed`)으로 보고 다시 쓰고, 다른 명령(`user`)은 건드리지 않습니다. 래퍼 명령에는 그 문자열이 없어 Orca가 유지하며, 그래도 바뀌면 `AgentHookConfigurationChecker`가 `replaced`로 표시합니다.
+- 추가한 테스트: `ClaudeStatusLineSnapshotTests`, `ClaudeStatusLineWrapperScriptTests`, `ClaudeStatusLineInstallerTests`, `ClaudeUsageProviderTests`의 statusline 테스트 7개
+- **공유 settings.json**: `~/.claude-2/settings.json`이 `~/.claude/settings.json`을 가리키는 심볼릭 링크인 환경이 있습니다. 설치기는 링크를 따라간 실제 파일을 읽고 쓰며(링크 유지), 원래 명령 기록도 실제 파일 기준으로 저장해 같은 파일을 한 번만 감쌉니다(래퍼가 자기 자신을 감싸지 않음).
+- 기본 플랜 테스트 330개 중 329개 통과, 1개 건너뜀(`-testPlan AgentBar`). 관련 5개 클래스 65개 모두 통과. 실행 중인 앱을 바꾸지 않기 위해 화면 동작 확인(빌드 후 재실행)은 하지 않았습니다.
+
 ## 개발 기록 102: 상세 팝업 높이를 내용에 맞춤
 
 - **원인**: `DetailPopoverView`가 `.frame(width:height: 480)`으로 높이를 고정하고, 서비스 목록 `ScrollView`와 `Spacer(minLength: 0)`가 남는 세로 공간을 채웠습니다. 그래서 서비스가 2개뿐이어도 마지막 행과 하단 영역 사이에 큰 빈 공간이 생겼습니다.

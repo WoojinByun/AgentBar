@@ -33,7 +33,7 @@
 
 | 서비스 | 데이터 출처 |
 |---------|-----------|
-| Claude Code | Anthropic OAuth API(키체인에 저장된 인증 정보) |
+| Claude Code | Claude Code statusline의 `rate_limits`(설치한 경우, 60초 이내) 또는 Anthropic OAuth API(키체인에 저장된 인증 정보) |
 | OpenAI Codex | Codex App Server의 실제 사용량 및 사용 가능한 초기화권(ChatGPT 계정으로 로그인한 Codex CLI 필요) |
 | Google Gemini | 로컬 로그(`~/.gemini/tmp/`) |
 | GitHub Copilot | GitHub Copilot API(키체인에 저장된 PAT) |
@@ -67,6 +67,16 @@ Claude Code는 `CLAUDE_CONFIG_DIR`마다 로그인 정보를 따로 보관합니
 3. 팝업에는 계정별 행이, 메뉴 막대에는 `CC`, `CC2` 막대가 나타납니다. 로그인 전이면 행에 `Not signed in` 안내가 표시됩니다.
 
 디렉터리를 비워 둔 계정은 기존 기본 로그인(`~/.claude`)입니다. 사용 기록(History) 탭에는 첫 번째 계정만 기록합니다.
+
+<a id="claude-statusline-feed"></a>
+
+## Claude 사용량을 statusline에서 받기
+
+Claude 사용량 API(`/api/oauth/usage`)는 요청 제한(HTTP 429)이 잦습니다. Claude Code는 statusline 명령에 API 응답 헤더로 받은 `rate_limits`(`five_hour`·`seven_day`의 `used_percentage`, 초 단위 `resets_at`)를 넘겨주므로, AgentBar는 이 값을 우선 사용합니다.
+
+- 설정 → Notifications 탭 `Agent Sources`의 `Install statusline feed`를 누르면 등록된 Claude 계정마다 `settings.json`의 `statusLine.command`를 AgentBar 래퍼(`~/Library/Application Support/AgentBar/claude-statusline/statusline-wrapper.sh`)로 바꿉니다. 바꾸기 전 파일은 `~/.agentbar/backups/<시각>/`에 백업하고, 원래 명령은 `originals/`에 저장해 같은 입력으로 계속 실행합니다(Orca 등 기존 statusline 유지).
+- 래퍼는 payload를 `snapshots/<키>.json`에 저장합니다. 매 조회에서 해당 계정(`CLAUDE_CONFIG_DIR` 기준)의 값이 60초 이내면 API를 호출하지 않고, 아니면 기존 API 조회(캐시·백오프 포함)로 돌아갑니다.
+- 다른 도구가 `statusLine`을 다시 덮어쓰면 같은 화면의 상태 행에 `replaced`로 표시됩니다. `Remove`를 누르면 원래 `statusLine`을 복원합니다.
 
 <a id="install"></a>
 

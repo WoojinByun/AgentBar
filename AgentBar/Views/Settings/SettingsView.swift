@@ -52,6 +52,7 @@ struct SettingsView: View {
     @State private var zaiAPIKey: String = ""
     @State private var hasSavedZaiAPIKey = false
     @State private var hookConfigurationStatus: AgentHookConfigurationStatus = .unknown
+    @State private var statusLineFeedError: String?
     @State private var activeTokenSaveAlert: TokenSaveAlert?
     private let keychainSaveAction: @Sendable (String, String) throws -> Void
 
@@ -530,6 +531,31 @@ struct SettingsView: View {
                     status: hookConfigurationStatus.claude
                 )
 
+                HookConfigurationStatusRow(
+                    title: "Claude statusline usage feed",
+                    status: hookConfigurationStatus.claudeStatusLine
+                )
+
+                HStack {
+                    Button("Install statusline feed") {
+                        updateClaudeStatusLineFeed(install: true)
+                    }
+                    Button("Remove") {
+                        updateClaudeStatusLineFeed(install: false)
+                    }
+                    Spacer()
+                }
+                Text("Wraps the statusLine command in each Claude account's settings.json (backup in ~/.agentbar/backups) so usage comes from Claude Code's rate_limits instead of the usage API. The previous command keeps running with the same input.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let statusLineFeedError {
+                    Text(statusLineFeedError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 HStack {
                     Button("Re-check hook configuration") {
                         refreshHookConfigurationStatus()
@@ -687,6 +713,24 @@ struct SettingsView: View {
         hasSavedZaiAPIKey = KeychainManager.load(account: ServiceType.zai.keychainAccount) != nil
         copilotPAT = ""
         zaiAPIKey = ""
+    }
+
+    private func updateClaudeStatusLineFeed(install: Bool) {
+        let installer = ClaudeStatusLineInstaller()
+        var failures: [String] = []
+        for account in ClaudeAccountStore.load() {
+            do {
+                if install {
+                    try installer.install(configDir: account.resolvedConfigDir)
+                } else {
+                    try installer.uninstall(configDir: account.resolvedConfigDir)
+                }
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        statusLineFeedError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        refreshHookConfigurationStatus()
     }
 
     private func refreshHookConfigurationStatus() {
