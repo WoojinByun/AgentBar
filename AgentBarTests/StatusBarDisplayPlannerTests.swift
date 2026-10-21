@@ -119,6 +119,52 @@ final class StatusBarDisplayPlannerTests: XCTestCase {
         )
     }
 
+    func testRowFramesFillViewportHeightForOneTwoAndThreeRows() {
+        let viewport = StatusBarDisplayPlanner.viewportHeight
+        for count in 1...3 {
+            let frames = StatusBarDisplayPlanner.rowFrames(forVisibleRowCount: count)
+            XCTAssertEqual(frames.count, count)
+            XCTAssertEqual(frames.first?.minY ?? -1, 0, accuracy: 0.0001, "\(count) rows: top gap")
+            XCTAssertEqual(frames.last?.maxY ?? -1, viewport, accuracy: 0.0001, "\(count) rows: bottom gap")
+            for (upper, lower) in zip(frames, frames.dropFirst()) {
+                XCTAssertEqual(lower.minY - upper.maxY, StatusBarDisplayPlanner.rowSpacing, accuracy: 0.0001)
+            }
+            XCTAssertEqual(Set(frames.map(\.height)).count, 1, "rows share one height")
+        }
+    }
+
+    func testRowHeightSplitsViewportEvenly() {
+        XCTAssertEqual(StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 1).rowHeight, 20, accuracy: 0.0001)
+        XCTAssertEqual(StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 2).rowHeight, 9.5, accuracy: 0.0001)
+        XCTAssertEqual(StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 3).rowHeight, 6, accuracy: 0.0001)
+    }
+
+    func testThreeRowLayoutKeepsOriginalLook() {
+        let layout = StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 3)
+        XCTAssertEqual(layout.spacing, 1)
+        XCTAssertEqual(layout.labelFontSize, 6)
+        XCTAssertEqual(layout.labelWidth, 14)
+        XCTAssertEqual(layout.cornerRadius, 1.5)
+    }
+
+    func testRowCountIsClampedToVisibleRange() {
+        XCTAssertEqual(
+            StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 0),
+            StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 1)
+        )
+        XCTAssertEqual(
+            StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 7),
+            StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 3)
+        )
+    }
+
+    func testLabelFontGrowsAsRowsGetTaller() {
+        let sizes = (1...3).map { StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: $0).labelFontSize }
+        XCTAssertGreaterThan(sizes[0], sizes[1])
+        XCTAssertGreaterThan(sizes[1], sizes[2])
+    }
+
+
     private func makeUsage(
         service: ServiceType,
         fiveHourPct: Double,

@@ -52,17 +52,15 @@ struct StackedBarView: View {
     }
 
     private var scrollingRows: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: StatusBarDisplayPlanner.rowSpacing) {
+        let layout = StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: rankedServices.count)
+        return ZStack(alignment: .top) {
+            VStack(spacing: layout.spacing) {
                 ForEach(rankedServices) { usage in
-                    SingleBarView(usage: usage)
-                        .frame(height: StatusBarDisplayPlanner.rowHeight)
+                    SingleBarView(usage: usage, layout: layout)
+                        .frame(height: layout.rowHeight)
                 }
             }
-            .offset(
-                y: -CGFloat(currentScrollIndex)
-                    * (StatusBarDisplayPlanner.rowHeight + StatusBarDisplayPlanner.rowSpacing)
-            )
+            .offset(y: -CGFloat(currentScrollIndex) * layout.rowStride)
         }
         .frame(height: StatusBarDisplayPlanner.viewportHeight, alignment: .top)
         .clipped()
@@ -113,44 +111,47 @@ struct StackedBarView: View {
 
 struct SingleBarView: View {
     let usage: UsageData
+    var layout: StatusBarDisplayPlanner.RowLayout = StatusBarDisplayPlanner.rowLayout(
+        forVisibleRowCount: StatusBarDisplayPlanner.visibleRowCount
+    )
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         HStack(spacing: 2) {
             Text(usage.shortName)
-                .font(.system(size: 6, weight: .medium, design: .rounded))
+                .font(.system(size: layout.labelFontSize, weight: .medium, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .foregroundStyle(usage.service.darkColor)
-                .frame(width: 14, alignment: .trailing)
+                .frame(width: layout.labelWidth, alignment: .trailing)
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     // Background — visible outline when empty
-                    RoundedRectangle(cornerRadius: 1.5)
+                    RoundedRectangle(cornerRadius: layout.cornerRadius)
                         .fill(usage.service.darkColor.opacity(0.15))
 
                     // Weekly usage (light color)
                     if let weekly = usage.weeklyUsage, weekly.percentage > 0 {
-                        RoundedRectangle(cornerRadius: 1.5)
+                        RoundedRectangle(cornerRadius: layout.cornerRadius)
                             .fill(usage.service.lightColor)
                             .frame(width: max(2, geo.size.width * weekly.percentage))
                     }
 
                     // 5-hour usage (dark color, overlaps weekly)
                     if usage.fiveHourUsage.percentage > 0 {
-                        RoundedRectangle(cornerRadius: 1.5)
+                        RoundedRectangle(cornerRadius: layout.cornerRadius)
                             .fill(usage.service.darkColor)
                             .frame(width: max(2, geo.size.width * usage.fiveHourUsage.percentage))
                     }
                 }
                 // 1px outline so the filled share of the full bar is readable.
                 .overlay(
-                    RoundedRectangle(cornerRadius: 1.5)
+                    RoundedRectangle(cornerRadius: layout.cornerRadius)
                         .strokeBorder(Color.white, lineWidth: 1 / max(displayScale, 1))
                 )
             }
         }
-        .frame(height: StatusBarDisplayPlanner.rowHeight)
+        .frame(height: layout.rowHeight)
     }
 }

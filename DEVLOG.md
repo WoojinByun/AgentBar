@@ -2,6 +2,13 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 104: 메뉴 막대 막대 행이 서비스 수에 맞춰 높이를 채우도록 수정
+
+- **원인**: 상태 아이템 행 높이가 3행 기준(6pt, 간격 1pt)으로 고정되어 1~2개일 때 아래가 비었습니다.
+- **행 높이 분할**: 보이는 행 수에 따라 20pt 뷰포트를 균등 분할(1행 20pt, 2행 9.5pt씩, 3행 기존 6pt)하고 라벨 폰트(11/8/6)·라벨 폭(20/16/14)·모서리 반경(3/2/1.5)도 함께 키웁니다.
+- `StatusBarDisplayPlanner`에 `RowLayout`, `rowLayout(forVisibleRowCount:)`, `rowFrames(forVisibleRowCount:width:)`를 추가하고 고정 `rowHeight`를 제거했습니다.
+- 기본 플랜 테스트 335개 중 334개 통과, 1개 건너뜀(`-testPlan AgentBar`, 개발 기록 103과 합친 트리 기준)
+
 ## 개발 기록 103: Claude Code statusline의 rate_limits를 사용량 1순위 출처로 사용
 
 - **배경**: `/api/oauth/usage`가 같은 토큰으로 폴링하는 Orca 때문에 `retry-after: 0`인 429를 자주 반환해, 캐시 값에 머물고 사용량 초기화도 놓쳤습니다. Claude Code는 statusline 명령에 API 응답 헤더에서 얻은 `rate_limits`를 넘깁니다(2.1.306 바이너리 내장 문서: `five_hour`/`seven_day`의 `used_percentage` 0–100, `resets_at` Unix epoch 초. `used_percentage = min(round(utilization*1000)/10, 100)`). 추가 API 호출 없이 얻을 수 있습니다.
