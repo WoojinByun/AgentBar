@@ -108,10 +108,16 @@ struct ClaudeStatusLineInstaller {
         let wrapper = wrapperCommand(configDir: configDir)
         guard currentCommand(in: settings) != wrapper else { return }
 
-        // Remember the command we replace so uninstall can restore it.
+        // Remember the command we replace so uninstall can restore it, including the
+        // exact original text of the value so the file comes back byte for byte.
         let original = settings["statusLine"]
+        var record: [String: Any] = [:]
+        record["statusLine"] = original
+        if let bytes = rawSettings(configDir: configDir),
+           let range = JSONTopLevelEditor.valueRange(of: "statusLine", in: bytes) {
+            record["raw"] = String(decoding: bytes[range], as: UTF8.self)
+        }
         try fileManager.createDirectory(at: originalsDirectory, withIntermediateDirectories: true)
-        let record: [String: Any] = original.map { ["statusLine": $0] } ?? [:]
         try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
             .write(to: originalStatusLineURL(configDir: configDir), options: .atomic)
         let commandURL = originalCommandURL(configDir: configDir)
@@ -125,7 +131,7 @@ struct ClaudeStatusLineInstaller {
         statusLine["type"] = "command"
         statusLine["command"] = wrapper
         settings["statusLine"] = statusLine
-        try writeSettings(settings, configDir: configDir)
+        try writeSettings(settings, configDir: configDir, edit: .install(command: wrapper))
     }
 
     func uninstall(configDir: String?) throws {
@@ -139,10 +145,11 @@ struct ClaudeStatusLineInstaller {
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             if let original = record["statusLine"] {
                 settings["statusLine"] = original
+                try writeSettings(settings, configDir: configDir, edit: .restore(raw: record["raw"] as? String))
             } else {
                 settings.removeValue(forKey: "statusLine")
+                try writeSettings(settings, configDir: configDir, edit: .remove)
             }
-            try writeSettings(settings, configDir: configDir)
         }
 
         try? fileManager.removeItem(at: recordURL)
@@ -166,16 +173,81 @@ struct ClaudeStatusLineInstaller {
         return object
     }
 
-    private func writeSettings(_ settings: [String: Any], configDir: String?) throws {
+    private func rawSettings(configDir: String?) -> [UInt8]? {
+        (try? Data(contentsOf: resolvedSettingsURL(configDir: configDir))).map { Array($0) }
+    }
+
+    private enum StatusLineEdit {
+        /// Replace only the `command` string inside the existing statusLine object.
+        case install(command: String)
+        /// Put back the original value text recorded at install time.
+        case restore(raw: String?)
+        /// Remove the statusLine member (there was none before install).
+        case remove
+    }
+
+    /// Writes `settings` (the current file with only `statusLine` changed) by
+    /// editing just the top-level `statusLine` member in place, so key order,
+    /// indentation, spacing and the trailing newline stay byte-for-byte.
+    /// Each candidate edit is parsed back and must equal `settings`.
+    /// Fallback: if the scanner cannot handle the file (e.g. duplicate keys) or no
+    /// candidate validates, the whole file is rewritten with sorted keys and
+    /// pretty printing as before. A backup is taken first in both cases.
+    private func writeSettings(_ settings: [String: Any], configDir: String?, edit: StatusLineEdit) throws {
         let url = resolvedSettingsURL(configDir: configDir)
+        let permissions = (try? fileManager.attributesOfItem(atPath: url.path))?[.posixPermissions]
         try backup(url)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let data = try minimalEdit(of: rawSettings(configDir: configDir), to: settings, edit: edit)
+            ?? fullRewrite(settings)
+        try data.write(to: url, options: .atomic)
+        if let permissions {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+        }
+    }
+
+    private func minimalEdit(of bytes: [UInt8]?, to settings: [String: Any], edit: StatusLineEdit) -> Data? {
+        guard let bytes else { return nil }
+        let statusLine = settings["statusLine"] as? [String: Any]
+        var candidates: [() -> [UInt8]?] = []
+        switch edit {
+        case .install(let command):
+            candidates.append {
+                guard let range = JSONTopLevelEditor.valueRange(of: "statusLine", in: bytes),
+                      let value = JSONTopLevelEditor.replacingStringMember(
+                          "command", with: command, inObject: Array(bytes[range])
+                      ) else { return nil }
+                return JSONTopLevelEditor.settingValue(value, forKey: "statusLine", in: bytes)
+            }
+        case .restore(let raw):
+            if let raw {
+                candidates.append { JSONTopLevelEditor.settingValue(Array(raw.utf8), forKey: "statusLine", in: bytes) }
+            }
+        case .remove:
+            candidates.append { JSONTopLevelEditor.removingMember("statusLine", in: bytes) }
+        }
+        if let statusLine {
+            candidates.append { JSONTopLevelEditor.settingGeneratedObject(statusLine, forKey: "statusLine", in: bytes) }
+        }
+
+        let intended = settings as NSDictionary
+        for candidate in candidates {
+            guard let edited = candidate(),
+                  let parsed = try? JSONSerialization.jsonObject(with: Data(edited)) as? NSDictionary,
+                  parsed.isEqual(intended) else { continue }
+            return Data(edited)
+        }
+        return nil
+    }
+
+    private func fullRewrite(_ settings: [String: Any]) throws -> Data {
         var data = try JSONSerialization.data(
             withJSONObject: settings,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         )
         data.append(0x0A)
-        try data.write(to: url, options: .atomic)
+        return data
     }
 
     /// Copies `url` to `<backupRoot>/<UTC timestamp>/<absolute path>` like
@@ -285,4 +357,244 @@ fi
 exit 0
 
 """#
+}
+
+// MARK: - Top-level JSON member editor
+
+/// Scans a JSON object at byte level to find and splice one top-level member,
+/// leaving every other byte of the file untouched. It assumes the text already
+/// parses with JSONSerialization; callers validate every result by parsing it again.
+/// Returns nil whenever the shape is unexpected (not an object, duplicate target key,
+/// unknown tokens), so callers fall back to a full rewrite.
+enum JSONTopLevelEditor {
+    struct Member {
+        let key: String
+        let keyStart: Int
+        let keyEnd: Int
+        let valueStart: Int
+        let valueEnd: Int
+    }
+
+    struct Layout {
+        let open: Int
+        let close: Int
+        let members: [Member]
+    }
+
+    private static let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
+    private static let openBrace = UInt8(ascii: "{"), closeBrace = UInt8(ascii: "}")
+    private static let openBracket = UInt8(ascii: "["), closeBracket = UInt8(ascii: "]")
+    private static let comma = UInt8(ascii: ","), colon = UInt8(ascii: ":")
+    private static let newline = UInt8(ascii: "\n")
+
+    static func layout(_ b: [UInt8]) -> Layout? {
+        var i = b.starts(with: [0xEF, 0xBB, 0xBF]) ? 3 : 0
+        skipWhitespace(b, &i)
+        guard i < b.count, b[i] == openBrace else { return nil }
+        let open = i
+        i += 1
+        var members: [Member] = []
+        skipWhitespace(b, &i)
+        var close: Int
+        if i < b.count, b[i] == closeBrace {
+            close = i
+        } else {
+            while true {
+                skipWhitespace(b, &i)
+                let keyStart = i
+                guard skipString(b, &i) else { return nil }
+                let keyEnd = i
+                guard let key = try? JSONSerialization.jsonObject(
+                    with: Data(b[keyStart..<keyEnd]), options: .fragmentsAllowed
+                ) as? String else { return nil }
+                skipWhitespace(b, &i)
+                guard i < b.count, b[i] == colon else { return nil }
+                i += 1
+                skipWhitespace(b, &i)
+                let valueStart = i
+                guard skipValue(b, &i) else { return nil }
+                members.append(Member(key: key, keyStart: keyStart, keyEnd: keyEnd, valueStart: valueStart, valueEnd: i))
+                skipWhitespace(b, &i)
+                guard i < b.count else { return nil }
+                if b[i] == comma { i += 1; continue }
+                guard b[i] == closeBrace else { return nil }
+                close = i
+                break
+            }
+        }
+        i = close + 1
+        skipWhitespace(b, &i)
+        guard i == b.count else { return nil }
+        return Layout(open: open, close: close, members: members)
+    }
+
+    /// Byte range of the value of top-level `key`; nil if absent, duplicated or unscannable.
+    static func valueRange(of key: String, in bytes: [UInt8]) -> Range<Int>? {
+        guard let layout = layout(bytes) else { return nil }
+        let matches = layout.members.filter { $0.key == key }
+        guard matches.count == 1 else { return nil }
+        return matches[0].valueStart..<matches[0].valueEnd
+    }
+
+    /// Replaces the value of `key`, or appends a new member after the last one using
+    /// that member's leading whitespace and key/value separator.
+    static func settingValue(_ value: [UInt8], forKey key: String, in b: [UInt8]) -> [UInt8]? {
+        guard let layout = layout(b) else { return nil }
+        let matches = layout.members.filter { $0.key == key }
+        guard matches.count <= 1 else { return nil }
+        if let member = matches.first {
+            return Array(b[..<member.valueStart]) + value + Array(b[member.valueEnd...])
+        }
+        let keyToken = Array(jsonString(key).utf8)
+        guard let last = layout.members.last else {
+            // Empty object: `{}` -> `{"key": value}`; removal restores `{}` exactly.
+            return Array(b[...layout.open]) + keyToken + Array(": ".utf8) + value + Array(b[(layout.open + 1)...])
+        }
+        let style = memberStyle(of: layout, in: b)
+        let insertion = [comma] + style.gap + keyToken + style.separator + value
+        return Array(b[..<last.valueEnd]) + insertion + Array(b[last.valueEnd...])
+    }
+
+    /// Like `settingValue`, with the object serialized to match the file's style:
+    /// multi-line with the file's indent unit when the file is multi-line, else compact.
+    static func settingGeneratedObject(_ object: [String: Any], forKey key: String, in b: [UInt8]) -> [UInt8]? {
+        guard let layout = layout(b) else { return nil }
+        let style = memberStyle(of: layout, in: b)
+        guard let value = encodeObject(object, style: style) else { return nil }
+        return settingValue(Array(value.utf8), forKey: key, in: b)
+    }
+
+    /// Removes member `key` with its comma, so `settingValue`'s insertion is undone exactly.
+    static func removingMember(_ key: String, in b: [UInt8]) -> [UInt8]? {
+        guard let layout = layout(b) else { return nil }
+        let indices = layout.members.indices.filter { layout.members[$0].key == key }
+        guard indices.count == 1, let index = indices.first else { return nil }
+        let member = layout.members[index]
+        let range: Range<Int>
+        if layout.members.count == 1 {
+            range = member.keyStart..<member.valueEnd
+        } else if index == layout.members.count - 1 {
+            range = layout.members[index - 1].valueEnd..<member.valueEnd
+        } else {
+            range = member.keyStart..<layout.members[index + 1].keyStart
+        }
+        return Array(b[..<range.lowerBound]) + Array(b[range.upperBound...])
+    }
+
+    /// Replaces the string value of `key` inside a JSON object text.
+    static func replacingStringMember(_ key: String, with string: String, inObject b: [UInt8]) -> [UInt8]? {
+        guard let layout = layout(b) else { return nil }
+        let matches = layout.members.filter { $0.key == key }
+        guard matches.count == 1, let member = matches.first, b[member.valueStart] == quote else { return nil }
+        return Array(b[..<member.valueStart]) + Array(jsonString(string).utf8) + Array(b[member.valueEnd...])
+    }
+
+    // MARK: Style
+
+    struct MemberStyle {
+        /// Whitespace before a member key (e.g. "\n  "), copied from the last member.
+        let gap: [UInt8]
+        /// Bytes between a key and its value (e.g. ": ").
+        let separator: [UInt8]
+        let indent: String
+        let multiline: Bool
+    }
+
+    private static func memberStyle(of layout: Layout, in b: [UInt8]) -> MemberStyle {
+        guard let last = layout.members.last else {
+            return MemberStyle(gap: [], separator: Array(": ".utf8), indent: "", multiline: false)
+        }
+        let index = layout.members.count - 1
+        let gapStart = index == 0 ? layout.open + 1 : (b[layout.members[index - 1].valueEnd..<last.keyStart].firstIndex(of: comma) ?? layout.members[index - 1].valueEnd) + 1
+        let gap = Array(b[gapStart..<last.keyStart])
+        let indentBytes = gap.lastIndex(of: newline).map { Array(gap[($0 + 1)...]) } ?? []
+        return MemberStyle(
+            gap: gap,
+            separator: Array(b[last.keyEnd..<last.valueStart]),
+            indent: String(decoding: indentBytes, as: UTF8.self),
+            multiline: gap.contains(newline)
+        )
+    }
+
+    /// `type` and `command` first, then the remaining keys sorted.
+    private static func encodeObject(_ object: [String: Any], style: MemberStyle) -> String? {
+        let order = ["type", "command"].filter { object[$0] != nil } + object.keys.filter { $0 != "type" && $0 != "command" }.sorted()
+        let separator = String(decoding: style.separator, as: UTF8.self)
+        var entries: [String] = []
+        for key in order {
+            guard let value = encodeValue(object[key]!) else { return nil }
+            entries.append(jsonString(key) + separator + value)
+        }
+        guard style.multiline else { return "{" + entries.joined(separator: ",") + "}" }
+        let unit = style.indent.isEmpty ? "  " : style.indent
+        let inner = entries.map { style.indent + unit + $0 }.joined(separator: ",\n")
+        return "{\n" + inner + "\n" + style.indent + "}"
+    }
+
+    private static func encodeValue(_ value: Any) -> String? {
+        if let string = value as? String { return jsonString(string) }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys, .withoutEscapingSlashes]
+        ) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func jsonString(_ string: String) -> String {
+        let data = (try? JSONSerialization.data(
+            withJSONObject: string, options: [.fragmentsAllowed, .withoutEscapingSlashes]
+        )) ?? Data("\"\"".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: Scanning
+
+    private static func skipWhitespace(_ b: [UInt8], _ i: inout Int) {
+        while i < b.count, b[i] == 0x20 || b[i] == 0x0A || b[i] == 0x0D || b[i] == 0x09 { i += 1 }
+    }
+
+    private static func skipString(_ b: [UInt8], _ i: inout Int) -> Bool {
+        guard i < b.count, b[i] == quote else { return false }
+        i += 1
+        while i < b.count {
+            switch b[i] {
+            case backslash: i += 2
+            case quote: i += 1; return true
+            case 0x00..<0x20: return false
+            default: i += 1
+            }
+        }
+        return false
+    }
+
+    /// Skips one value. Nested objects and arrays are matched by depth, skipping strings,
+    /// which is sound because the input is known to be valid JSON.
+    private static func skipValue(_ b: [UInt8], _ i: inout Int) -> Bool {
+        guard i < b.count else { return false }
+        switch b[i] {
+        case quote:
+            return skipString(b, &i)
+        case openBrace, openBracket:
+            var depth = 0
+            while i < b.count {
+                switch b[i] {
+                case quote:
+                    guard skipString(b, &i) else { return false }
+                    continue
+                case openBrace, openBracket:
+                    depth += 1
+                case closeBrace, closeBracket:
+                    depth -= 1
+                    if depth == 0 { i += 1; return true }
+                default:
+                    break
+                }
+                i += 1
+            }
+            return false
+        default:
+            let start = i
+            while i < b.count, ![comma, closeBrace, closeBracket, 0x20, 0x0A, 0x0D, 0x09].contains(b[i]) { i += 1 }
+            return i > start
+        }
+    }
 }

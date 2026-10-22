@@ -481,6 +481,167 @@ final class ClaudeStatusLineInstallerTests: XCTestCase {
         XCTAssertEqual((try readSettings(url)["statusLine"] as? [String: Any])?["command"] as? String, orcaCommand)
     }
 
+    // MARK: Minimal settings.json edits (general users)
+
+    private func writeRaw(_ text: String, configDir: String? = nil) throws -> URL {
+        let url = installer.settingsURL(configDir: configDir)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+        return url
+    }
+
+    private func rawText(_ url: URL) throws -> String {
+        try XCTUnwrap(String(data: Data(contentsOf: url), encoding: .utf8))
+    }
+
+    /// Runs the installed statusLine command the way Claude Code does: through a shell, payload on stdin.
+    private func runStatusLineCommand(in url: URL, stdin: String) throws -> (status: Int32, stdout: String) {
+        let command = try XCTUnwrap((readSettings(url)["statusLine"] as? [String: Any])?["command"] as? String)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        try process.run()
+        input.fileHandleForWriting.write(Data(stdin.utf8))
+        try input.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    private let realisticSettings = """
+    {
+      "model": "opus",
+      "permissions": {
+        "allow": ["Bash(git status)", "Read(~/x/**)"],
+        "deny": []
+      },
+      "statusLine": {
+        "type": "command",
+        "command": "bash ~/.claude/statusline.sh",
+        "padding": 0
+      },
+      "theme": "dark"
+    }
+
+    """
+
+    func testDefaultAccountRegularFileRoundTripIsByteIdentical() throws {
+        let url = try writeRaw(realisticSettings)
+        try installer.install(configDir: nil)
+
+        let installed = try rawText(url)
+        XCTAssertNotEqual(installed, realisticSettings)
+        XCTAssertTrue(installed.hasPrefix("{\n  \"model\": \"opus\",\n  \"permissions\": {\n    \"allow\": [\"Bash(git status)\", \"Read(~/x/**)\"],"))
+        XCTAssertTrue(installed.hasSuffix("\"padding\": 0\n  },\n  \"theme\": \"dark\"\n}\n"), installed)
+        XCTAssertEqual(installer.state(configDir: nil), .installed)
+
+        try installer.uninstall(configDir: nil)
+        XCTAssertEqual(try rawText(url), realisticSettings)
+    }
+
+    func testNoStatusLineInstallsSilentWrapperAndUninstallRemovesKeyByteIdentical() throws {
+        let original = "{\n  \"model\": \"opus\",\n  \"theme\": \"dark\"\n}\n"
+        let url = try writeRaw(original)
+
+        try installer.install(configDir: nil)
+        let installed = try rawText(url)
+        XCTAssertTrue(installed.hasPrefix("{\n  \"model\": \"opus\",\n  \"theme\": \"dark\",\n  \"statusLine\": {\n    \""), installed)
+        XCTAssertTrue(installed.hasSuffix("\n  }\n}\n"), installed)
+
+        let run = try runStatusLineCommand(in: url, stdin: #"{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":2000003600}}}"#)
+        XCTAssertEqual(run.status, 0)
+        XCTAssertEqual(run.stdout, "")
+
+        try installer.uninstall(configDir: nil)
+        XCTAssertEqual(try rawText(url), original)
+        XCTAssertNil(try readSettings(url)["statusLine"])
+    }
+
+    func testNonOrcaStatusLineOutputPassesThrough() throws {
+        let url = try writeRaw("{\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"echo hi; cat >/dev/null\"\n  }\n}\n")
+        try installer.install(configDir: nil)
+
+        let run = try runStatusLineCommand(in: url, stdin: #"{"session_id":"x"}"#)
+        XCTAssertEqual(run.status, 0)
+        XCTAssertEqual(run.stdout, "hi\n")
+    }
+
+    func testFormattingVariantsArePreservedOutsideStatusLine() throws {
+        let variants: [String] = [
+            // 4-space indent, no trailing newline, statusLine in the middle
+            "{\n    \"a\": 1,\n    \"statusLine\": {\n        \"type\": \"command\",\n        \"command\": \"x\"\n    },\n    \"b\": [1, 2]\n}",
+            // statusLine first, with extra fields
+            "{\n  \"statusLine\": {\"type\": \"command\", \"command\": \"x\", \"padding\": 2, \"refreshInterval\": 5},\n  \"z\": true\n}\n",
+            // statusLine last
+            "{\n  \"z\": null,\n  \"statusLine\": {\n    \"command\": \"x\",\n    \"type\": \"command\"\n  }\n}\n",
+            // compact one-liner
+            #"{"a":{"b":[1,{"c":"}"}]},"statusLine":{"type":"command","command":"x"},"d":"\"]"}"#,
+            // unicode and escapes elsewhere
+            "{\n  \"name\": \"한글 \\u00e9 \\\"q\\\" \\\\ / 😀\",\n  \"statusLine\": {\"type\": \"command\", \"command\": \"x\"},\n  \"t\": \"\\t\\n\"\n}\n"
+        ]
+
+        for (index, original) in variants.enumerated() {
+            let url = try writeRaw(original)
+            let span = try XCTUnwrap(JSONTopLevelEditor.valueRange(of: "statusLine", in: Array(original.utf8)), "\(index)")
+            let bytes = Array(original.utf8)
+
+            try installer.install(configDir: nil)
+            let installed = Array(try Data(contentsOf: url))
+            XCTAssertTrue(installed.starts(with: bytes[..<span.lowerBound]), "prefix kept \(index)")
+            XCTAssertTrue(installed.reversed().starts(with: bytes[span.upperBound...].reversed()), "suffix kept \(index)")
+            let line = try XCTUnwrap(readSettings(url)["statusLine"] as? [String: Any], "\(index)")
+            XCTAssertEqual(line["command"] as? String, installer.wrapperCommand(configDir: nil), "\(index)")
+            if index == 1 {
+                XCTAssertEqual(line["padding"] as? Int, 2)
+                XCTAssertEqual(line["refreshInterval"] as? Int, 5)
+            }
+
+            try installer.uninstall(configDir: nil)
+            XCTAssertEqual(try rawText(url), original, "roundtrip \(index)")
+        }
+    }
+
+    func testInsertedStatusLineFollowsFileIndentationAndEmptyObject() throws {
+        let fourSpaces = "{\n    \"a\": 1\n}"
+        var url = try writeRaw(fourSpaces)
+        try installer.install(configDir: nil)
+        let installed = try rawText(url)
+        XCTAssertTrue(installed.hasPrefix("{\n    \"a\": 1,\n    \"statusLine\": {\n        \""), installed)
+        XCTAssertTrue(installed.hasSuffix("\n    }\n}"), installed)
+        try installer.uninstall(configDir: nil)
+        XCTAssertEqual(try rawText(url), fourSpaces)
+
+        url = try writeRaw("{}")
+        try installer.install(configDir: nil)
+        XCTAssertNotNil(try readSettings(url)["statusLine"])
+        try installer.uninstall(configDir: nil)
+        XCTAssertEqual(try rawText(url), "{}")
+    }
+
+    func testScannerFailureFallsBackToFullRewriteWithValidJSON() throws {
+        // Duplicate keys parse with JSONSerialization but are ambiguous for a splice.
+        let url = try writeRaw(#"{"statusLine":{"type":"command","command":"a"},"statusLine":{"type":"command","command":"b"},"k":1}"#)
+        try installer.install(configDir: nil)
+
+        let settings = try readSettings(url)
+        XCTAssertEqual((settings["statusLine"] as? [String: Any])?["command"] as? String, installer.wrapperCommand(configDir: nil))
+        XCTAssertEqual(settings["k"] as? Int, 1)
+        XCTAssertEqual(installer.state(configDir: nil), .installed)
+        try installer.uninstall(configDir: nil)
+        XCTAssertNotNil(try readSettings(url)["statusLine"])
+    }
+
+    func testMalformedSettingsAreLeftUntouched() throws {
+        let broken = "{\n  \"a\": 1,\n}\n// comment\n"
+        let url = try writeRaw(broken)
+        XCTAssertThrowsError(try installer.install(configDir: nil))
+        XCTAssertEqual(try rawText(url), broken)
+        XCTAssertEqual(installer.state(configDir: nil), .settingsUnreadable)
+    }
+
     func testCheckerReportsStatusLineStateForAccounts() throws {
         _ = try writeSettings(["statusLine": ["type": "command", "command": orcaCommand]], configDir: nil)
         let second = tempDir.appendingPathComponent("home/.claude-2").path

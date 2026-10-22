@@ -133,6 +133,20 @@ final class StatusBarDisplayPlannerTests: XCTestCase {
         }
     }
 
+    func testClaudePlusCodexUsesTwoFullHeightRows() {
+        // StackedBarView sizes rows by the ranked service count.
+        let ranked = StatusBarDisplayPlanner.rankedServices(from: [
+            makeUsage(service: .claude, fiveHourPct: 0.4),
+            makeUsage(service: .codex, fiveHourPct: 0.2)
+        ])
+        XCTAssertEqual(ranked.count, 2)
+        let frames = StatusBarDisplayPlanner.rowFrames(forVisibleRowCount: ranked.count)
+        XCTAssertEqual(frames.count, 2)
+        XCTAssertEqual(frames[0].height, 9.5, accuracy: 0.0001)
+        XCTAssertEqual(frames[0].minY, 0, accuracy: 0.0001)
+        XCTAssertEqual(frames[1].maxY, StatusBarDisplayPlanner.viewportHeight, accuracy: 0.0001)
+    }
+
     func testRowHeightSplitsViewportEvenly() {
         XCTAssertEqual(StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 1).rowHeight, 20, accuracy: 0.0001)
         XCTAssertEqual(StatusBarDisplayPlanner.rowLayout(forVisibleRowCount: 2).rowHeight, 9.5, accuracy: 0.0001)

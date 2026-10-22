@@ -2,6 +2,16 @@
 
 > 개발 기록 1–69는 [DEVLOG-archive.md](DEVLOG-archive.md)에 보관되어 있습니다.
 
+## 개발 기록 106: statusline 설치가 settings.json의 statusLine 값만 고치도록 변경
+
+- **문제**: 설치·제거가 `settings.json` 전체를 정렬된 키와 들여쓰기로 다시 써서 키 순서와 서식이 바뀌었습니다.
+- **최소 수정**: `JSONTopLevelEditor`가 바이트 단위로 최상위 객체를 훑어(문자열·이스케이프·중첩 객체·배열 처리) `"statusLine"` 값의 범위만 찾아 바꿉니다. 설치는 기존 `statusLine` 객체 안의 `command` 문자열만 래퍼 명령으로 바꾸고(`padding` 등 다른 필드와 서식 유지), 원래 값의 원문을 `originals/<키>.json`의 `raw`에 저장해 제거 때 그대로 되돌립니다. `statusLine`이 없던 파일에는 마지막 항목의 앞 공백과 `키: 값` 구분자를 따라 새 항목을 추가하고, 제거 때 쉼표와 함께 지워 원래 바이트로 돌아갑니다. 빈 `{}`도 처리합니다.
+- **검증과 대체 경로**: 각 수정 결과를 다시 파싱해 "원래 내용에서 `statusLine`만 바뀐 객체"와 같은지 확인합니다. 스캐너가 처리할 수 없거나(예: 중복 키) 검증에 실패하면 기존처럼 파일 전체를 정렬된 JSON으로 다시 씁니다. 두 경우 모두 먼저 백업하며, 심볼릭 링크 처리와 파일 권한은 유지합니다. JSON으로 읽을 수 없는 파일은 건드리지 않고 오류를 냅니다.
+- **실제 파일 점검(사본, 읽기 전용)**: 현재 `~/.claude/settings.json` 사본에서 `statusLine`을 Orca 명령으로 되돌리는 수정이 검증을 통과했고 그 밖의 바이트는 모두 같았습니다. `raw`가 없는 이전 설치 기록은 파일 서식에 맞춘 값으로 되돌립니다.
+- **빈 statusline 출력 확인**: Claude Code 2.1.306은 `statusLine` 설정이 있을 때만 statusline 구성 요소를 그리고, 출력이 비면 전체 화면(`tui: fullscreen`)에서는 공백 한 칸짜리 줄을, 인라인 모드에서는 아무것도 그리지 않습니다. 기존 `statusLine`이 없던 전체 화면 사용자는 설치 후 빈 줄이 하나 생길 수 있어 README에 적었습니다.
+- 추가한 테스트: 일반 사용자 시나리오(기본 계정 일반 파일 왕복, `statusLine` 없음에서 무출력 래퍼와 키 제거, 다른 statusline 출력 통과, 서식 변형 5종, 들여쓰기에 맞춘 추가와 빈 객체, 중복 키 대체 경로, 잘못된 JSON 미변경), `StatusBarDisplayPlannerTests.testClaudePlusCodexUsesTwoFullHeightRows`
+- 기본 플랜 테스트 356개 중 355개 통과, 1개 건너뜀(`-testPlan AgentBar`)
+
 ## 개발 기록 105: statusline 스냅숏을 그 계정의 로그인과 최신 API 응답으로만 인정
 
 - **증상**: 피드 설치 직후 기본 계정의 7d가 API의 17% 대신 79%로 표시되었습니다. `statusLine.command`가 바뀌면 Claude Code가 모든 세션의 statusline을 다시 그리는데, 15:10 이후 유휴였던 세션(PID 15696, `42891c0d`)이 메모리에 있던 사용량 초기화 이전 값을 새 수신 시각으로 보냈습니다. 그 세션 기록의 `credential_org`는 현재 기본 로그인과 같은 org(`af947993`)였으므로 다른 로그인이 아니라 오래된 데이터였습니다. 기존 유휴 판별(`session_id`+`total_api_duration_ms`)은 처음 본 세션을 걸러내지 못했습니다.
